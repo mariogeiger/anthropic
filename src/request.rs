@@ -7,6 +7,7 @@
 #![allow(non_camel_case_types)]
 
 use crate::context::{Context, Message, SystemPrompt, Tool};
+use crate::values::api_enum;
 use crate::{ThinkingDisplay, ThinkingType};
 use serde::Serialize;
 
@@ -178,26 +179,10 @@ pub enum Opus4_7Thinking {
     },
 }
 
-/// Effort levels for Opus 4.7. `Xhigh` is exclusive to Opus 4.7.
-pub enum Opus4_7Effort {
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-impl Opus4_7Effort {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-        }
-    }
-}
+// `Xhigh` is exclusive to Opus 4.7.
+api_enum! { Opus4_7Effort {
+    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
+}}
 
 // ── Sonnet 4.6 ───────────────────────────────────────────────────────────────
 // Temperature OR adaptive thinking (API forces temperature=1.0 under adaptive).
@@ -243,23 +228,9 @@ pub enum Sonnet4_6Sampling {
     },
 }
 
-pub enum Sonnet4_6Effort {
-    Low,
-    Medium,
-    High,
-    Max,
-}
-
-impl Sonnet4_6Effort {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Max => "max",
-        }
-    }
-}
+api_enum! { Sonnet4_6Effort {
+    Low => "low", Medium => "medium", High => "high", Max => "max",
+}}
 
 // ── Haiku 4.5 ────────────────────────────────────────────────────────────────
 // Temperature + legacy fixed-budget thinking. `output_config.effort` rejected

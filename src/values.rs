@@ -30,6 +30,8 @@ macro_rules! api_enum {
     };
 }
 
+pub(crate) use api_enum;
+
 api_enum! { ImageMediaType {
     Jpeg => "image/jpeg", Png => "image/png", Gif => "image/gif", Webp => "image/webp",
 }}

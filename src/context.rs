@@ -437,8 +437,8 @@ impl Context {
         Ok(())
     }
 
-    pub fn breakpoint_count(&self) -> u8 {
-        self.slots.iter().filter(|s| s.is_some()).count() as u8
+    pub fn breakpoint_count(&self) -> usize {
+        self.slots.iter().filter(|s| s.is_some()).count()
     }
 
     pub fn message_count(&self) -> usize {
@@ -494,7 +494,7 @@ impl Context {
         override_slot: CacheSlot,
         new_state: Option<(SlotLocation, CacheTtl)>,
     ) -> Result<(), RollCacheError> {
-        let mut placements: Vec<(usize, CacheTtl)> = CacheSlot::ALL
+        let mut placements: Vec<(FlowKey, CacheTtl)> = CacheSlot::ALL
             .iter()
             .filter_map(|&slot| {
                 let s = if slot == override_slot {
@@ -502,7 +502,7 @@ impl Context {
                 } else {
                     self.slots[slot.idx()]
                 };
-                s.map(|s| (flow_index(s.location), s.ttl))
+                s.map(|s| (flow_key(s.location), s.ttl))
             })
             .collect();
         placements.sort_by_key(|&(pos, _)| pos);
@@ -519,12 +519,16 @@ impl Context {
     }
 }
 
-// Sort key for TTL-ordering: reflects request-flow order tools→system→messages.
-fn flow_index(loc: SlotLocation) -> usize {
+// Sort key for TTL-ordering: request-flow order tools→system→messages, then
+// (msg, block) within messages. Tuple ordering gives the same result as the
+// old hand-rolled sentinels, without the `usize::MAX/N` magic.
+type FlowKey = (u8, usize, usize);
+
+fn flow_key(loc: SlotLocation) -> FlowKey {
     match loc {
-        SlotLocation::Tools => 0,
-        SlotLocation::System => usize::MAX / 4,
-        SlotLocation::Message { msg, block } => usize::MAX / 2 + msg * 1024 + block,
+        SlotLocation::Tools => (0, 0, 0),
+        SlotLocation::System => (1, 0, 0),
+        SlotLocation::Message { msg, block } => (2, msg, block),
     }
 }
 
