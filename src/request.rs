@@ -12,6 +12,26 @@ use serde::Serialize;
 
 // ── Model variants ───────────────────────────────────────────────────────────
 
+/// Model identity without per-call parameters. Used where only the `model`
+/// field is meaningful (e.g. `CountRequest`, which ignores sampling/thinking).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelId {
+    Opus4_7,
+    Sonnet4_6,
+    Haiku4_5,
+}
+
+impl ModelId {
+    /// The `model` field value sent on the wire.
+    pub fn api_id(self) -> &'static str {
+        match self {
+            ModelId::Opus4_7 => "claude-opus-4-7",
+            ModelId::Sonnet4_6 => "claude-sonnet-4-6",
+            ModelId::Haiku4_5 => "claude-haiku-4-5",
+        }
+    }
+}
+
 /// A Claude model plus its per-call parameters.
 pub enum Model {
     Opus4_7(Opus4_7),
@@ -20,13 +40,18 @@ pub enum Model {
 }
 
 impl Model {
+    /// Identity without per-call parameters.
+    pub fn id(&self) -> ModelId {
+        match self {
+            Model::Opus4_7(_) => ModelId::Opus4_7,
+            Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
+            Model::Haiku4_5(_) => ModelId::Haiku4_5,
+        }
+    }
+
     /// The `model` field value sent on the wire.
     pub fn api_id(&self) -> &'static str {
-        match self {
-            Model::Opus4_7(_) => "claude-opus-4-7",
-            Model::Sonnet4_6(_) => "claude-sonnet-4-6",
-            Model::Haiku4_5(_) => "claude-haiku-4-5",
-        }
+        self.id().api_id()
     }
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
@@ -230,16 +255,17 @@ impl<'a> Request<'a> {
 
 // ── CountRequest ─────────────────────────────────────────────────────────────
 
-/// Request body for `POST /v1/messages/count_tokens`. Per-call params on `Model`
-/// are accepted for symmetry but ignored — only model+system+tools+messages ship.
+/// Request body for `POST /v1/messages/count_tokens`. Takes only a `ModelId`:
+/// the endpoint ignores sampling/thinking/effort, so exposing them here would
+/// let callers set values the wire payload silently drops (violates §5).
 pub struct CountRequest<'a> {
     pub context: &'a Context,
-    pub model: Model,
+    pub model: ModelId,
 }
 
 impl<'a> CountRequest<'a> {
-    pub fn new(context: &'a Context, model: impl Into<Model>) -> Self {
-        Self { context, model: model.into() }
+    pub fn new(context: &'a Context, model: ModelId) -> Self {
+        Self { context, model }
     }
 }
 
@@ -347,8 +373,8 @@ mod tests {
     fn req(m: impl Into<Model>) -> Value {
         serde_json::to_value(Request::new(&Context::new(), m, 1024)).unwrap()
     }
-    fn count(m: impl Into<Model>) -> Value {
-        serde_json::to_value(CountRequest::new(&Context::new(), m)).unwrap()
+    fn count(id: ModelId) -> Value {
+        serde_json::to_value(CountRequest::new(&Context::new(), id)).unwrap()
     }
     fn approx(v: &Value, expected: f64) {
         let got = v.as_f64().expect("not a number");
@@ -420,7 +446,7 @@ mod tests {
 
     #[test]
     fn count_request_omits_sampling_and_max_tokens() {
-        let v = count(Model::opus_4_7());
+        let v = count(ModelId::Opus4_7);
         assert_eq!(v["model"], "claude-opus-4-7");
         assert!(v["messages"].is_array());
         for f in ["max_tokens", "temperature", "thinking", "output_config", "stop_sequences"] {
@@ -432,10 +458,17 @@ mod tests {
     fn count_request_carries_system_and_tools() {
         let ctx =
             Context::new().with_system("sys").with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
-        let v = serde_json::to_value(CountRequest::new(&ctx, Model::sonnet_4_6())).unwrap();
+        let v = serde_json::to_value(CountRequest::new(&ctx, ModelId::Sonnet4_6)).unwrap();
         assert_eq!(v["model"], "claude-sonnet-4-6");
         assert_eq!(v["system"], "sys");
         assert_eq!(v["tools"][0]["name"], "t");
+    }
+
+    #[test]
+    fn model_id_from_configured_model() {
+        let m: Model = Model::opus_4_7().with_adaptive_thinking(ThinkingDisplay::Summarized).into();
+        assert_eq!(m.id(), ModelId::Opus4_7);
+        assert_eq!(m.id().api_id(), m.api_id());
     }
 
     #[test]
