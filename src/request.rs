@@ -31,14 +31,32 @@ impl Model {
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
-    pub fn opus_4_7() -> Opus4_7 { Opus4_7::default() }
-    pub fn sonnet_4_6() -> Sonnet4_6 { Sonnet4_6::default() }
-    pub fn haiku_4_5() -> Haiku4_5 { Haiku4_5::default() }
+    pub fn opus_4_7() -> Opus4_7 {
+        Opus4_7::default()
+    }
+    pub fn sonnet_4_6() -> Sonnet4_6 {
+        Sonnet4_6::default()
+    }
+    pub fn haiku_4_5() -> Haiku4_5 {
+        Haiku4_5::default()
+    }
 }
 
-impl From<Opus4_7> for Model { fn from(p: Opus4_7) -> Self { Model::Opus4_7(p) } }
-impl From<Sonnet4_6> for Model { fn from(p: Sonnet4_6) -> Self { Model::Sonnet4_6(p) } }
-impl From<Haiku4_5> for Model { fn from(p: Haiku4_5) -> Self { Model::Haiku4_5(p) } }
+impl From<Opus4_7> for Model {
+    fn from(p: Opus4_7) -> Self {
+        Model::Opus4_7(p)
+    }
+}
+impl From<Sonnet4_6> for Model {
+    fn from(p: Sonnet4_6) -> Self {
+        Model::Sonnet4_6(p)
+    }
+}
+impl From<Haiku4_5> for Model {
+    fn from(p: Haiku4_5) -> Self {
+        Model::Haiku4_5(p)
+    }
+}
 
 // ── Opus 4.7 ─────────────────────────────────────────────────────────────────
 // No sampling (temperature/top_p/top_k rejected). Adaptive thinking only;
@@ -56,8 +74,13 @@ impl Default for Opus4_7 {
 }
 
 impl Opus4_7 {
-    pub fn new() -> Self { Self::default() }
-    pub fn with_effort(mut self, effort: Opus4_7Effort) -> Self { self.effort = effort; self }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_effort(mut self, effort: Opus4_7Effort) -> Self {
+        self.effort = effort;
+        self
+    }
 
     /// Enable adaptive thinking. `display` defaults to `Omitted` on Opus 4.7
     /// (blocks stream but text is empty); pass `Summarized` for visible text.
@@ -75,17 +98,28 @@ impl Opus4_7 {
 pub enum Opus4_7Thinking {
     /// `thinking` field omitted from the request.
     Off,
-    Adaptive { display: ThinkingDisplay },
+    Adaptive {
+        display: ThinkingDisplay,
+    },
 }
 
 /// Effort levels for Opus 4.7. `Xhigh` is exclusive to Opus 4.7.
-pub enum Opus4_7Effort { Low, Medium, High, Xhigh, Max }
+pub enum Opus4_7Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
 
 impl Opus4_7Effort {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Low => "low", Self::Medium => "medium", Self::High => "high",
-            Self::Xhigh => "xhigh", Self::Max => "max",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -106,8 +140,13 @@ impl Default for Sonnet4_6 {
 }
 
 impl Sonnet4_6 {
-    pub fn new() -> Self { Self::default() }
-    pub fn with_effort(mut self, effort: Sonnet4_6Effort) -> Self { self.effort = effort; self }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_effort(mut self, effort: Sonnet4_6Effort) -> Self {
+        self.effort = effort;
+        self
+    }
     pub fn with_temperature(mut self, t: f32) -> Self {
         self.sampling = Sonnet4_6Sampling::Temperature(t);
         self
@@ -127,11 +166,21 @@ pub enum Sonnet4_6Sampling {
     Adaptive,
 }
 
-pub enum Sonnet4_6Effort { Low, Medium, High, Max }
+pub enum Sonnet4_6Effort {
+    Low,
+    Medium,
+    High,
+    Max,
+}
 
 impl Sonnet4_6Effort {
     pub fn as_str(&self) -> &'static str {
-        match self { Self::Low => "low", Self::Medium => "medium", Self::High => "high", Self::Max => "max" }
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+        }
     }
 }
 
@@ -143,12 +192,19 @@ pub struct Haiku4_5 {
 }
 
 impl Default for Haiku4_5 {
-    fn default() -> Self { Self { temperature: 1.0 } }
+    fn default() -> Self {
+        Self { temperature: 1.0 }
+    }
 }
 
 impl Haiku4_5 {
-    pub fn new() -> Self { Self::default() }
-    pub fn with_temperature(mut self, t: f32) -> Self { self.temperature = t; self }
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_temperature(mut self, t: f32) -> Self {
+        self.temperature = t;
+        self
+    }
 }
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -200,7 +256,9 @@ struct AdaptiveThinking {
 }
 
 #[derive(Serialize)]
-struct OutputConfig { effort: &'static str }
+struct OutputConfig {
+    effort: &'static str,
+}
 
 #[derive(Serialize)]
 struct RequestWire<'a> {
@@ -226,10 +284,14 @@ impl Serialize for Request<'_> {
         let adaptive = |display| AdaptiveThinking { kind: ThinkingType::Adaptive.as_str(), display };
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
-            Model::Opus4_7(p) => (None, match &p.thinking {
-                Opus4_7Thinking::Off => None,
-                Opus4_7Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
-            }, effort(p.effort.as_str())),
+            Model::Opus4_7(p) => (
+                None,
+                match &p.thinking {
+                    Opus4_7Thinking::Off => None,
+                    Opus4_7Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
+                },
+                effort(p.effort.as_str()),
+            ),
             Model::Sonnet4_6(p) => {
                 let (t, th) = match p.sampling {
                     Sonnet4_6Sampling::Temperature(t) => (Some(t), None),
@@ -243,7 +305,9 @@ impl Serialize for Request<'_> {
         RequestWire {
             model: self.model.api_id(),
             max_tokens: self.max_tokens,
-            temperature, thinking, output_config,
+            temperature,
+            thinking,
+            output_config,
             stop_sequences: &self.stop_sequences,
             system: self.context.system.as_ref(),
             tools: &self.context.tools,
@@ -307,9 +371,8 @@ mod tests {
         assert_eq!(v["thinking"]["display"], "summarized");
         assert!(v.get("temperature").is_none());
 
-        let v = req(Model::opus_4_7()
-            .with_adaptive_thinking(ThinkingDisplay::Omitted)
-            .with_effort(Opus4_7Effort::Xhigh));
+        let v =
+            req(Model::opus_4_7().with_adaptive_thinking(ThinkingDisplay::Omitted).with_effort(Opus4_7Effort::Xhigh));
         assert_eq!(v["thinking"]["display"], "omitted");
         assert_eq!(v["output_config"]["effort"], "xhigh");
     }
@@ -367,9 +430,8 @@ mod tests {
 
     #[test]
     fn count_request_carries_system_and_tools() {
-        let ctx = Context::new()
-            .with_system("sys")
-            .with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
+        let ctx =
+            Context::new().with_system("sys").with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
         let v = serde_json::to_value(CountRequest::new(&ctx, Model::sonnet_4_6())).unwrap();
         assert_eq!(v["model"], "claude-sonnet-4-6");
         assert_eq!(v["system"], "sys");
@@ -379,8 +441,10 @@ mod tests {
     #[test]
     fn stop_sequences_roundtrip() {
         let ctx = Context::new();
-        let v = serde_json::to_value(Request::new(&ctx, Model::opus_4_7(), 1024)
-            .stop_sequences(vec!["STOP".into(), "END".into()])).unwrap();
+        let v = serde_json::to_value(
+            Request::new(&ctx, Model::opus_4_7(), 1024).stop_sequences(vec!["STOP".into(), "END".into()]),
+        )
+        .unwrap();
         assert_eq!(v["stop_sequences"][0], "STOP");
         assert_eq!(v["stop_sequences"][1], "END");
         // Empty vec is skipped.

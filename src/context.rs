@@ -30,11 +30,18 @@ impl CacheControl {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheSlot { S0, S1, S2, S3 }
+pub enum CacheSlot {
+    S0,
+    S1,
+    S2,
+    S3,
+}
 
 impl CacheSlot {
     const ALL: [CacheSlot; 4] = [CacheSlot::S0, CacheSlot::S1, CacheSlot::S2, CacheSlot::S3];
-    fn idx(self) -> usize { self as usize }
+    fn idx(self) -> usize {
+        self as usize
+    }
 }
 
 // Anchor slots (System/Tools) are set at construction and immutable.
@@ -47,7 +54,10 @@ enum SlotLocation {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct SlotState { location: SlotLocation, ttl: CacheTtl }
+struct SlotState {
+    location: SlotLocation,
+    ttl: CacheTtl,
+}
 
 // ── Images & tool results ────────────────────────────────────────────────────
 
@@ -63,7 +73,9 @@ impl ImageSource {
     pub fn base64(media_type: ImageMediaType, data: impl Into<String>) -> Self {
         ImageSource::Base64 { media_type: media_type.as_str(), data: data.into() }
     }
-    pub fn url(url: impl Into<String>) -> Self { ImageSource::Url { url: url.into() } }
+    pub fn url(url: impl Into<String>) -> Self {
+        ImageSource::Url { url: url.into() }
+    }
     pub fn file(file_id: impl Into<String>) -> Self {
         ImageSource::File { file_id: file_id.into() }
     }
@@ -129,22 +141,24 @@ impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text { text: text.into(), cache_control: None }
     }
-    pub fn image(source: ImageSource) -> Self { Self::Image { source, cache_control: None } }
+    pub fn image(source: ImageSource) -> Self {
+        Self::Image { source, cache_control: None }
+    }
     pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
         Self::ToolUse { id: id.into(), name: name.into(), input, cache_control: None }
     }
     pub fn tool_result(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
-        Self::ToolResult {
-            tool_use_id: tool_use_id.into(), content, is_error: false, cache_control: None,
-        }
+        Self::ToolResult { tool_use_id: tool_use_id.into(), content, is_error: false, cache_control: None }
     }
 
     fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
         match self {
-            Self::Text { cache_control, .. } | Self::Image { cache_control, .. }
-            | Self::ToolUse { cache_control, .. } | Self::ToolResult { cache_control, .. }
-            | Self::Thinking { cache_control, .. } | Self::RedactedThinking { cache_control, .. }
-                => cache_control,
+            Self::Text { cache_control, .. }
+            | Self::Image { cache_control, .. }
+            | Self::ToolUse { cache_control, .. }
+            | Self::ToolResult { cache_control, .. }
+            | Self::Thinking { cache_control, .. }
+            | Self::RedactedThinking { cache_control, .. } => cache_control,
         }
     }
 }
@@ -196,9 +210,7 @@ impl Serialize for SystemPrompt {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match &self.cache_control {
             None => self.text.serialize(s),
-            Some(cc) => [SystemTextBlockRef {
-                kind: "text", text: &self.text, cache_control: cc,
-            }].serialize(s),
+            Some(cc) => [SystemTextBlockRef { kind: "text", text: &self.text, cache_control: cc }].serialize(s),
         }
     }
 }
@@ -220,14 +232,14 @@ pub enum RollCacheError {
 impl std::fmt::Display for RollCacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RollCacheError::SlotOccupiedByAnchor(s) =>
-                write!(f, "cache slot {s:?} is occupied by a system/tools anchor"),
-            RollCacheError::NoBlocksToCache =>
-                write!(f, "no content blocks to attach a cache breakpoint to"),
-            RollCacheError::ConflictingTtlAtSamePosition =>
-                write!(f, "target position already has a different TTL (API returns 400)"),
-            RollCacheError::TtlOrderingViolation =>
-                write!(f, "all 1h breakpoints must come before any 5m breakpoints"),
+            RollCacheError::SlotOccupiedByAnchor(s) => {
+                write!(f, "cache slot {s:?} is occupied by a system/tools anchor")
+            }
+            RollCacheError::NoBlocksToCache => write!(f, "no content blocks to attach a cache breakpoint to"),
+            RollCacheError::ConflictingTtlAtSamePosition => {
+                write!(f, "target position already has a different TTL (API returns 400)")
+            }
+            RollCacheError::TtlOrderingViolation => write!(f, "all 1h breakpoints must come before any 5m breakpoints"),
         }
     }
 }
@@ -244,7 +256,9 @@ pub struct Context {
 }
 
 impl Default for Context {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Context {
@@ -258,24 +272,20 @@ impl Context {
     }
 
     /// Set the system prompt with a cache breakpoint. Panics if `slot` is in use.
-    pub fn with_system_cached(
-        mut self, slot: CacheSlot, text: impl Into<String>, ttl: CacheTtl,
-    ) -> Self {
+    pub fn with_system_cached(mut self, slot: CacheSlot, text: impl Into<String>, ttl: CacheTtl) -> Self {
         assert!(self.slots[slot.idx()].is_none(), "cache slot {slot:?} already in use");
-        self.system = Some(SystemPrompt {
-            text: text.into(),
-            cache_control: Some(CacheControl::ephemeral(ttl)),
-        });
+        self.system = Some(SystemPrompt { text: text.into(), cache_control: Some(CacheControl::ephemeral(ttl)) });
         self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::System, ttl });
         self
     }
 
-    pub fn with_tools(mut self, tools: Vec<Tool>) -> Self { self.tools = tools; self }
+    pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
+        self.tools = tools;
+        self
+    }
 
     /// Attach a cache breakpoint on the last tool. Panics if `slot` in use or tools empty.
-    pub fn with_tools_cached(
-        mut self, slot: CacheSlot, mut tools: Vec<Tool>, ttl: CacheTtl,
-    ) -> Self {
+    pub fn with_tools_cached(mut self, slot: CacheSlot, mut tools: Vec<Tool>, ttl: CacheTtl) -> Self {
         assert!(self.slots[slot.idx()].is_none(), "cache slot {slot:?} already in use");
         assert!(!tools.is_empty(), "with_tools_cached: tools must not be empty");
         tools.last_mut().unwrap().cache_control = Some(CacheControl::ephemeral(ttl));
@@ -289,8 +299,12 @@ impl Context {
     fn push(&mut self, role: &'static str, content: Vec<ContentBlock>) {
         self.messages.push(Message { role, content });
     }
-    pub fn push_user(&mut self, blocks: Vec<ContentBlock>) { self.push("user", blocks); }
-    pub fn push_assistant(&mut self, blocks: Vec<ContentBlock>) { self.push("assistant", blocks); }
+    pub fn push_user(&mut self, blocks: Vec<ContentBlock>) {
+        self.push("user", blocks);
+    }
+    pub fn push_assistant(&mut self, blocks: Vec<ContentBlock>) {
+        self.push("assistant", blocks);
+    }
     pub fn push_user_text(&mut self, text: impl Into<String>) {
         self.push("user", vec![ContentBlock::text(text)]);
     }
@@ -319,7 +333,11 @@ impl Context {
 
         // Another slot at the same position with a different TTL → API 400.
         for (j, other) in self.slots.iter().enumerate() {
-            if j != i && let Some(s) = other && s.location == target && s.ttl != ttl {
+            if j != i
+                && let Some(s) = other
+                && s.location == target
+                && s.ttl != ttl
+            {
                 return Err(RollCacheError::ConflictingTtlAtSamePosition);
             }
         }
@@ -352,24 +370,29 @@ impl Context {
         self.slots.iter().filter(|s| s.is_some()).count() as u8
     }
 
-    pub fn message_count(&self) -> usize { self.messages.len() }
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
 
     // ── Internals ───────────────────────────────────────────────────────────
 
     fn tail_position(&self) -> Result<(usize, usize), RollCacheError> {
         let m = self.messages.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
-        let b = self.messages[m].content.len().checked_sub(1)
-            .ok_or(RollCacheError::NoBlocksToCache)?;
+        let b = self.messages[m].content.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
         Ok((m, b))
     }
 
     fn write_cache_control(&mut self, loc: SlotLocation, cc: Option<CacheControl>) {
         match loc {
             SlotLocation::System => {
-                if let Some(sp) = &mut self.system { sp.cache_control = cc; }
+                if let Some(sp) = &mut self.system {
+                    sp.cache_control = cc;
+                }
             }
             SlotLocation::Tools => {
-                if let Some(t) = self.tools.last_mut() { t.cache_control = cc; }
+                if let Some(t) = self.tools.last_mut() {
+                    t.cache_control = cc;
+                }
             }
             SlotLocation::Message { msg, block } => {
                 if let Some(b) = self.messages.get_mut(msg).and_then(|m| m.content.get_mut(block)) {
@@ -382,13 +405,18 @@ impl Context {
     /// Verify final wire order is `[1h…, 5m…]`. `new_state` simulates a pending
     /// `roll_cache` before committing.
     fn validate_ordering_with_override(
-        &self, override_slot: CacheSlot, new_state: Option<(SlotLocation, CacheTtl)>,
+        &self,
+        override_slot: CacheSlot,
+        new_state: Option<(SlotLocation, CacheTtl)>,
     ) -> Result<(), RollCacheError> {
-        let mut placements: Vec<(usize, CacheTtl)> = CacheSlot::ALL.iter()
+        let mut placements: Vec<(usize, CacheTtl)> = CacheSlot::ALL
+            .iter()
             .filter_map(|&slot| {
                 let s = if slot == override_slot {
                     new_state.map(|(location, ttl)| SlotState { location, ttl })
-                } else { self.slots[slot.idx()] };
+                } else {
+                    self.slots[slot.idx()]
+                };
                 s.map(|s| (flow_index(s.location), s.ttl))
             })
             .collect();
@@ -435,10 +463,7 @@ mod tests {
     #[test]
     fn roll_cache_on_empty_errors() {
         let mut ctx = Context::new();
-        assert_eq!(
-            ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap_err(),
-            RollCacheError::NoBlocksToCache,
-        );
+        assert_eq!(ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap_err(), RollCacheError::NoBlocksToCache,);
     }
 
     #[test]
@@ -474,10 +499,7 @@ mod tests {
         ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
         ctx.push_user_text("two");
         // 1h after 5m rejected.
-        assert_eq!(
-            ctx.roll_cache(CacheSlot::S1, CacheTtl::OneHour).unwrap_err(),
-            RollCacheError::TtlOrderingViolation,
-        );
+        assert_eq!(ctx.roll_cache(CacheSlot::S1, CacheTtl::OneHour).unwrap_err(), RollCacheError::TtlOrderingViolation,);
 
         // 1h system anchor then 5m tail is fine.
         let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour);
