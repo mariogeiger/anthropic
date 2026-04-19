@@ -150,6 +150,9 @@ impl ContentBlock {
     pub fn tool_result(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
         Self::ToolResult { tool_use_id: tool_use_id.into(), content, is_error: false, cache_control: None }
     }
+    pub fn tool_result_err(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
+        Self::ToolResult { tool_use_id: tool_use_id.into(), content, is_error: true, cache_control: None }
+    }
 
     fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
         match self {
@@ -591,8 +594,13 @@ mod tests {
     #[test]
     fn tool_result_is_error_emitted_as_bool() {
         let mut ctx = Context::new();
-        ctx.push_user(vec![ContentBlock::tool_result("tu_1", ToolResultContent::Text("oops".into()))]);
-        assert_eq!(req(&ctx)["messages"][0]["content"][0]["is_error"], false);
+        ctx.push_user(vec![
+            ContentBlock::tool_result("tu_1", ToolResultContent::Text("ok".into())),
+            ContentBlock::tool_result_err("tu_2", ToolResultContent::Text("oops".into())),
+        ]);
+        let v = req(&ctx);
+        assert_eq!(v["messages"][0]["content"][0]["is_error"], false);
+        assert_eq!(v["messages"][0]["content"][1]["is_error"], true);
     }
 
     #[test]
