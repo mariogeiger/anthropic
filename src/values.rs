@@ -1,6 +1,9 @@
-//! Enums mirroring API JSON values. `as_str()` outbound, `from_str()` inbound (where applicable).
+//! Enums mirroring API JSON values. `as_str()` is always available (outbound).
+//! `from_str()` (inbound) is gated behind the `response-helpers` feature to keep
+//! §6 ("bindings only — no response parser") strict by default.
 
-// Base: enum + `as_str()`. Optional `roundtrip` prefix adds `from_str()`.
+// Base: enum + `as_str()`. Optional `roundtrip` prefix adds `from_str()`,
+// itself gated behind the `response-helpers` feature.
 macro_rules! api_enum {
     (@base $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,6 +16,7 @@ macro_rules! api_enum {
     };
     (roundtrip $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
         api_enum! { @base $name { $($variant => $s),* } }
+        #[cfg(feature = "response-helpers")]
         impl $name {
             #[allow(clippy::should_implement_trait)]
             pub fn from_str(s: &str) -> Option<Self> {
@@ -61,6 +65,7 @@ api_enum! { roundtrip ErrorType {
     Overloaded => "overloaded_error",
 }}
 
+#[cfg(feature = "response-helpers")]
 impl ErrorType {
     /// Guess the error type from an HTTP status code.
     pub fn from_status(status: u16) -> Option<Self> {
@@ -85,6 +90,7 @@ api_enum! { CacheControlType { Ephemeral => "ephemeral" } }
 api_enum! { CacheTtl { FiveMinutes => "5m", OneHour => "1h" } }
 
 /// JSON field names in the `usage` response object.
+#[cfg(feature = "response-helpers")]
 pub mod usage_fields {
     pub const INPUT_TOKENS: &str = "input_tokens";
     pub const OUTPUT_TOKENS: &str = "output_tokens";

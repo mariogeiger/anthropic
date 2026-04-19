@@ -22,7 +22,7 @@ Vérifié en live. L'API accepte, la crate refuse.
 
 - [x] **Reformuler la doc de `ConflictingTtlAtSamePosition`.** Elle dit *"Anthropic returns 400"* (src/context.rs:213-214). En vrai, l'API ne voit jamais le cas (un bloc porte un seul `cache_control`). C'est un invariant interne. Reformuler en *"would corrupt slot bookkeeping"*.
 
-- [ ] **Helpers de réponse vs §6.** §6 dit *"no response parser"*. `ErrorType::from_status` (src/values.rs:64-81) et les `from_str` `roundtrip` sur `StopReason`/`ErrorType` sont des helpers de réponse. Soit les déplacer derrière une feature opt-in, soit assouplir §6.
+- [x] **Helpers de réponse vs §6.** §6 dit *"no response parser"*. `ErrorType::from_status` (src/values.rs:64-81) et les `from_str` `roundtrip` sur `StopReason`/`ErrorType` sont des helpers de réponse. Soit les déplacer derrière une feature opt-in, soit assouplir §6.
 
 ## Détails
 
