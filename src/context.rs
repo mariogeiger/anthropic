@@ -252,6 +252,25 @@ impl std::fmt::Display for RollCacheError {
 
 impl std::error::Error for RollCacheError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnchorError {
+    /// A cache slot already holds a breakpoint. Anchors never overwrite.
+    SlotAlreadyInUse(CacheSlot),
+    /// `with_tools_cached` was called with an empty tool list.
+    NoToolsToCache,
+}
+
+impl std::fmt::Display for AnchorError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AnchorError::SlotAlreadyInUse(s) => write!(f, "cache slot {s:?} is already in use"),
+            AnchorError::NoToolsToCache => write!(f, "no tools to attach a cache breakpoint to"),
+        }
+    }
+}
+
+impl std::error::Error for AnchorError {}
+
 // ── Context ──────────────────────────────────────────────────────────────────
 
 pub struct Context {
@@ -277,12 +296,19 @@ impl Context {
         self
     }
 
-    /// Set the system prompt with a cache breakpoint. Panics if `slot` is in use.
-    pub fn with_system_cached(mut self, slot: CacheSlot, text: impl Into<String>, ttl: CacheTtl) -> Self {
-        assert!(self.slots[slot.idx()].is_none(), "cache slot {slot:?} already in use");
+    /// Set the system prompt with a cache breakpoint.
+    pub fn with_system_cached(
+        mut self,
+        slot: CacheSlot,
+        text: impl Into<String>,
+        ttl: CacheTtl,
+    ) -> Result<Self, AnchorError> {
+        if self.slots[slot.idx()].is_some() {
+            return Err(AnchorError::SlotAlreadyInUse(slot));
+        }
         self.system = Some(SystemPrompt { text: text.into(), cache_control: Some(CacheControl::ephemeral(ttl)) });
         self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::System, ttl });
-        self
+        Ok(self)
     }
 
     pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
@@ -290,14 +316,23 @@ impl Context {
         self
     }
 
-    /// Attach a cache breakpoint on the last tool. Panics if `slot` in use or tools empty.
-    pub fn with_tools_cached(mut self, slot: CacheSlot, mut tools: Vec<Tool>, ttl: CacheTtl) -> Self {
-        assert!(self.slots[slot.idx()].is_none(), "cache slot {slot:?} already in use");
-        assert!(!tools.is_empty(), "with_tools_cached: tools must not be empty");
-        tools.last_mut().unwrap().cache_control = Some(CacheControl::ephemeral(ttl));
+    /// Attach a cache breakpoint on the last tool.
+    pub fn with_tools_cached(
+        mut self,
+        slot: CacheSlot,
+        mut tools: Vec<Tool>,
+        ttl: CacheTtl,
+    ) -> Result<Self, AnchorError> {
+        if self.slots[slot.idx()].is_some() {
+            return Err(AnchorError::SlotAlreadyInUse(slot));
+        }
+        let Some(last) = tools.last_mut() else {
+            return Err(AnchorError::NoToolsToCache);
+        };
+        last.cache_control = Some(CacheControl::ephemeral(ttl));
         self.tools = tools;
         self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::Tools, ttl });
-        self
+        Ok(self)
     }
 
     // ── Append-only evolution ───────────────────────────────────────────────
@@ -491,7 +526,7 @@ mod tests {
 
     #[test]
     fn anchors_cannot_be_rolled() {
-        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour);
+        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap();
         ctx.push_user_text("hi");
         assert_eq!(
             ctx.roll_cache(CacheSlot::S0, CacheTtl::OneHour).unwrap_err(),
@@ -509,7 +544,7 @@ mod tests {
         assert_eq!(ctx.roll_cache(CacheSlot::S1, CacheTtl::OneHour).unwrap_err(), RollCacheError::TtlOrderingViolation,);
 
         // 1h system anchor then 5m tail is fine.
-        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour);
+        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap();
         ctx.push_user_text("hi");
         ctx.roll_cache(CacheSlot::S3, CacheTtl::FiveMinutes).unwrap();
         assert_eq!(ctx.breakpoint_count(), 2);
@@ -547,7 +582,7 @@ mod tests {
         assert_eq!(req(&Context::new().with_system("you are helpful"))["system"], "you are helpful");
 
         // One-element block array when cached.
-        let v = req(&Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour));
+        let v = req(&Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap());
         assert_eq!(v["system"][0]["type"], "text");
         assert_eq!(v["system"][0]["text"], "sys");
         assert_eq!(v["system"][0]["cache_control"]["ttl"], "1h");
@@ -566,7 +601,7 @@ mod tests {
             Tool::new("one", serde_json::json!({"type": "object"})),
             Tool::new("two", serde_json::json!({"type": "object"})),
         ];
-        let v = req(&Context::new().with_tools_cached(CacheSlot::S1, tools, CacheTtl::OneHour));
+        let v = req(&Context::new().with_tools_cached(CacheSlot::S1, tools, CacheTtl::OneHour).unwrap());
         assert!(v["tools"][0].get("cache_control").is_none());
         assert_eq!(v["tools"][1]["cache_control"]["ttl"], "1h");
     }
