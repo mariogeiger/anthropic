@@ -1,197 +1,95 @@
-//! Enums and constants that mirror Anthropic API JSON values exactly
-//! (`as_str()` for outbound, `from_str()` for inbound).
-//!
-//! These types are the vocabulary of the Messages API — they don't carry
-//! behavior, they just make the string values type-safe to reference.
+//! Enums mirroring API JSON values. `as_str()` outbound, `from_str()` inbound (where applicable).
 
-macro_rules! api_enum_as_str {
-    ($(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
-        $(#[$meta])*
+// Base: enum + `as_str()`. Optional `roundtrip` prefix adds `from_str()`.
+macro_rules! api_enum {
+    (@base $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        $vis enum $name {
-            $($variant),*
-        }
-
+        pub enum $name { $($variant),* }
         impl $name {
             pub fn as_str(self) -> &'static str {
-                match self {
-                    $($name::$variant => $s),*
-                }
+                match self { $($name::$variant => $s),* }
             }
         }
     };
-}
-
-macro_rules! api_enum_roundtrip {
-    ($(#[$meta:meta])* $vis:vis enum $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
-        api_enum_as_str! {
-            $(#[$meta])*
-            $vis enum $name { $($variant => $s),* }
-        }
-
+    (roundtrip $name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
+        api_enum! { @base $name { $($variant => $s),* } }
         impl $name {
             #[allow(clippy::should_implement_trait)]
             pub fn from_str(s: &str) -> Option<Self> {
                 match s {
-                    $($s => Some($name::$variant)),*
-                    ,
+                    $($s => Some($name::$variant),)*
                     _ => None,
                 }
             }
         }
     };
+    ($name:ident { $($variant:ident => $s:literal),* $(,)? }) => {
+        api_enum! { @base $name { $($variant => $s),* } }
+    };
 }
 
-// ── Image source ──────────────────────────────────────────────────────────────
+api_enum! { ImageMediaType {
+    Jpeg => "image/jpeg", Png => "image/png", Gif => "image/gif", Webp => "image/webp",
+}}
 
-api_enum_as_str! {
-    pub enum ImageMediaType {
-        Jpeg => "image/jpeg",
-        Png => "image/png",
-        Gif => "image/gif",
-        Webp => "image/webp",
-    }
-}
+// `thinking.type`. `Enabled` is the legacy fixed-budget form (deprecated on Sonnet 4.6,
+// removed on Opus 4.7); `Adaptive` is the only form currently emitted by `Request`.
+api_enum! { ThinkingType { Enabled => "enabled", Adaptive => "adaptive" } }
 
-// ── Thinking config ───────────────────────────────────────────────────────────
+// Opus 4.7 `thinking.display`. Default `Omitted` = thinking streams but text is empty.
+api_enum! { ThinkingDisplay { Summarized => "summarized", Omitted => "omitted" } }
 
-// The `type` field inside the `thinking` request object. `Enabled` is the
-// legacy fixed-budget form (`{type: "enabled", budget_tokens: N}`), deprecated
-// on Sonnet 4.6 and removed on Opus 4.7. `Adaptive` is the only form currently
-// emitted by `crate::request::Request`.
-api_enum_as_str! {
-    pub enum ThinkingType {
-        Enabled => "enabled",
-        Adaptive => "adaptive",
-    }
-}
+api_enum! { roundtrip StopReason {
+    EndTurn => "end_turn",
+    MaxTokens => "max_tokens",
+    StopSequence => "stop_sequence",
+    ToolUse => "tool_use",
+    PauseTurn => "pause_turn",
+    Refusal => "refusal",
+}}
 
-// Controls what is returned in the `thinking` content block on Opus 4.7. The
-// API default is `Omitted` (thinking blocks stream but their text is empty);
-// opt into `Summarized` to get visible thinking progress.
-api_enum_as_str! {
-    pub enum ThinkingDisplay {
-        Summarized => "summarized",
-        Omitted => "omitted",
-    }
-}
-
-// ── Stop reasons ─────────────────────────────────────────────────────────────
-
-/// Values of the `stop_reason` field in responses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StopReason {
-    /// Model reached a natural stopping point.
-    EndTurn,
-    /// `max_tokens` was reached.
-    MaxTokens,
-    /// A custom stop sequence was generated.
-    StopSequence,
-    /// Model invoked one or more tools.
-    ToolUse,
-    /// A long-running turn was paused.
-    PauseTurn,
-    /// Streaming classifier refused to continue generation. Added 2025 with Claude 4.
-    Refusal,
-}
-
-impl StopReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            StopReason::EndTurn => "end_turn",
-            StopReason::MaxTokens => "max_tokens",
-            StopReason::StopSequence => "stop_sequence",
-            StopReason::ToolUse => "tool_use",
-            StopReason::PauseTurn => "pause_turn",
-            StopReason::Refusal => "refusal",
-        }
-    }
-
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "end_turn" => Some(StopReason::EndTurn),
-            "max_tokens" => Some(StopReason::MaxTokens),
-            "stop_sequence" => Some(StopReason::StopSequence),
-            "tool_use" => Some(StopReason::ToolUse),
-            "pause_turn" => Some(StopReason::PauseTurn),
-            "refusal" => Some(StopReason::Refusal),
-            _ => None,
-        }
-    }
-}
-
-// ── Error types ───────────────────────────────────────────────────────────────
-
-api_enum_roundtrip! {
-    /// Values of `error.type` in error response bodies.
-    pub enum ErrorType {
-        InvalidRequest => "invalid_request_error",
-        Authentication => "authentication_error",
-        Billing => "billing_error",
-        Permission => "permission_error",
-        NotFound => "not_found_error",
-        RequestTooLarge => "request_too_large",
-        RateLimit => "rate_limit_error",
-        Api => "api_error",
-        Timeout => "timeout_error",
-        Overloaded => "overloaded_error",
-    }
-}
+api_enum! { roundtrip ErrorType {
+    InvalidRequest => "invalid_request_error",
+    Authentication => "authentication_error",
+    Billing => "billing_error",
+    Permission => "permission_error",
+    NotFound => "not_found_error",
+    RequestTooLarge => "request_too_large",
+    RateLimit => "rate_limit_error",
+    Api => "api_error",
+    Timeout => "timeout_error",
+    Overloaded => "overloaded_error",
+}}
 
 impl ErrorType {
     /// Guess the error type from an HTTP status code.
     pub fn from_status(status: u16) -> Option<Self> {
-        match status {
-            400 => Some(ErrorType::InvalidRequest),
-            401 => Some(ErrorType::Authentication),
-            402 => Some(ErrorType::Billing),
-            403 => Some(ErrorType::Permission),
-            404 => Some(ErrorType::NotFound),
-            413 => Some(ErrorType::RequestTooLarge),
-            429 => Some(ErrorType::RateLimit),
-            500 => Some(ErrorType::Api),
-            504 => Some(ErrorType::Timeout),
-            529 => Some(ErrorType::Overloaded),
-            _ => None,
-        }
+        Some(match status {
+            400 => Self::InvalidRequest,
+            401 => Self::Authentication,
+            402 => Self::Billing,
+            403 => Self::Permission,
+            404 => Self::NotFound,
+            413 => Self::RequestTooLarge,
+            429 => Self::RateLimit,
+            500 => Self::Api,
+            504 => Self::Timeout,
+            529 => Self::Overloaded,
+            _ => return None,
+        })
     }
 }
 
-// ── Prompt caching ────────────────────────────────────────────────────────────
+api_enum! { CacheControlType { Ephemeral => "ephemeral" } }
 
-api_enum_as_str! {
-    pub enum CacheControlType {
-        Ephemeral => "ephemeral",
-    }
-}
-
-/// TTL values accepted by the ephemeral cache control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheTtl {
-    FiveMinutes,
-    OneHour,
-}
+api_enum! { CacheTtl { FiveMinutes => "5m", OneHour => "1h" } }
 
 impl CacheTtl {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CacheTtl::FiveMinutes => "5m",
-            CacheTtl::OneHour => "1h",
-        }
-    }
-
-    /// Choose the appropriate TTL bucket for a given number of seconds.
+    /// Pick the TTL bucket for `secs` (≤300s → 5m, else 1h).
     pub fn from_secs(secs: u32) -> Self {
-        if secs <= 300 {
-            CacheTtl::FiveMinutes
-        } else {
-            CacheTtl::OneHour
-        }
+        if secs <= 300 { Self::FiveMinutes } else { Self::OneHour }
     }
 }
-
-// ── Usage field names ─────────────────────────────────────────────────────────
 
 /// JSON field names in the `usage` response object.
 pub mod usage_fields {
