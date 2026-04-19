@@ -10,6 +10,56 @@ use crate::context::{Context, Message, SystemPrompt, Tool};
 use crate::{ThinkingDisplay, ThinkingType};
 use serde::Serialize;
 
+// ── Temperature ──────────────────────────────────────────────────────────────
+
+/// Sampling temperature. API-accepted range is `[0.0, 1.0]` and the value must
+/// be finite — constructing a `Temperature` is the only way to prove that,
+/// so downstream code never has to re-check.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Temperature(f32);
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TemperatureError {
+    /// Value was NaN or infinite.
+    NotFinite,
+    /// Value was finite but outside the API-accepted `[0.0, 1.0]` range.
+    OutOfRange(f32),
+}
+
+impl std::fmt::Display for TemperatureError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TemperatureError::NotFinite => write!(f, "temperature must be finite"),
+            TemperatureError::OutOfRange(v) => write!(f, "temperature {v} is outside [0.0, 1.0]"),
+        }
+    }
+}
+
+impl std::error::Error for TemperatureError {}
+
+impl Temperature {
+    pub fn new(v: f32) -> Result<Self, TemperatureError> {
+        if !v.is_finite() {
+            Err(TemperatureError::NotFinite)
+        } else if !(0.0..=1.0).contains(&v) {
+            Err(TemperatureError::OutOfRange(v))
+        } else {
+            Ok(Self(v))
+        }
+    }
+
+    pub fn get(self) -> f32 {
+        self.0
+    }
+}
+
+impl Default for Temperature {
+    /// API default is `1.0` (per Anthropic docs).
+    fn default() -> Self {
+        Self(1.0)
+    }
+}
+
 // ── Model variants ───────────────────────────────────────────────────────────
 
 /// Model identity without per-call parameters. Used where only the `model`
@@ -160,7 +210,7 @@ pub struct Sonnet4_6 {
 
 impl Default for Sonnet4_6 {
     fn default() -> Self {
-        Self { sampling: Sonnet4_6Sampling::Temperature(1.0), effort: Sonnet4_6Effort::High }
+        Self { sampling: Sonnet4_6Sampling::Temperature(Temperature::default()), effort: Sonnet4_6Effort::High }
     }
 }
 
@@ -172,7 +222,7 @@ impl Sonnet4_6 {
         self.effort = effort;
         self
     }
-    pub fn with_temperature(mut self, t: f32) -> Self {
+    pub fn with_temperature(mut self, t: Temperature) -> Self {
         self.sampling = Sonnet4_6Sampling::Temperature(t);
         self
     }
@@ -186,8 +236,8 @@ impl Sonnet4_6 {
 }
 
 pub enum Sonnet4_6Sampling {
-    /// `Temperature(1.0)` matches the API default when `temperature` is omitted.
-    Temperature(f32),
+    /// `Temperature::default()` (1.0) matches the API default when `temperature` is omitted.
+    Temperature(Temperature),
     Adaptive {
         display: ThinkingDisplay,
     },
@@ -212,15 +262,17 @@ impl Sonnet4_6Effort {
 }
 
 // ── Haiku 4.5 ────────────────────────────────────────────────────────────────
-// Temperature only. `output_config.effort` rejected (400); no adaptive thinking.
+// Temperature + legacy fixed-budget thinking. `output_config.effort` rejected
+// (400); adaptive thinking rejected (400).
 
 pub struct Haiku4_5 {
-    pub temperature: f32,
+    pub temperature: Temperature,
+    pub thinking: Haiku4_5Thinking,
 }
 
 impl Default for Haiku4_5 {
     fn default() -> Self {
-        Self { temperature: 1.0 }
+        Self { temperature: Temperature::default(), thinking: Haiku4_5Thinking::Off }
     }
 }
 
@@ -228,10 +280,29 @@ impl Haiku4_5 {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_temperature(mut self, t: f32) -> Self {
+    pub fn with_temperature(mut self, t: Temperature) -> Self {
         self.temperature = t;
         self
     }
+
+    /// Enable legacy fixed-budget thinking. Haiku 4.5 accepts the legacy
+    /// `{type: "enabled", budget_tokens: N}` form; adaptive thinking is rejected.
+    pub fn with_thinking(mut self, budget_tokens: u32) -> Self {
+        self.thinking = Haiku4_5Thinking::Enabled { budget_tokens };
+        self
+    }
+
+    pub fn with_thinking_off(mut self) -> Self {
+        self.thinking = Haiku4_5Thinking::Off;
+        self
+    }
+}
+
+pub enum Haiku4_5Thinking {
+    /// `thinking` field omitted from the request.
+    Off,
+    /// Legacy fixed-budget thinking: `{type: "enabled", budget_tokens: N}`.
+    Enabled { budget_tokens: u32 },
 }
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -284,6 +355,20 @@ struct AdaptiveThinking {
 }
 
 #[derive(Serialize)]
+struct EnabledThinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    budget_tokens: u32,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ThinkingWire {
+    Adaptive(AdaptiveThinking),
+    Enabled(EnabledThinking),
+}
+
+#[derive(Serialize)]
 struct OutputConfig {
     effort: &'static str,
 }
@@ -295,7 +380,7 @@ struct RequestWire<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<AdaptiveThinking>,
+    thinking: Option<ThinkingWire>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     stop_sequences: &'a Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -309,7 +394,11 @@ struct RequestWire<'a> {
 
 impl Serialize for Request<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let adaptive = |display| AdaptiveThinking { kind: ThinkingType::Adaptive.as_str(), display };
+        let adaptive =
+            |display| ThinkingWire::Adaptive(AdaptiveThinking { kind: ThinkingType::Adaptive.as_str(), display });
+        let enabled = |budget_tokens| {
+            ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled.as_str(), budget_tokens })
+        };
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
             Model::Opus4_7(p) => (
@@ -322,12 +411,18 @@ impl Serialize for Request<'_> {
             ),
             Model::Sonnet4_6(p) => {
                 let (t, th) = match p.sampling {
-                    Sonnet4_6Sampling::Temperature(t) => (Some(t), None),
+                    Sonnet4_6Sampling::Temperature(t) => (Some(t.get()), None),
                     Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display.as_str())))),
                 };
                 (t, th, effort(p.effort.as_str()))
             }
-            Model::Haiku4_5(p) => (Some(p.temperature), None, None),
+            Model::Haiku4_5(p) => {
+                let th = match p.thinking {
+                    Haiku4_5Thinking::Off => None,
+                    Haiku4_5Thinking::Enabled { budget_tokens } => Some(enabled(budget_tokens)),
+                };
+                (Some(p.temperature.get()), th, None)
+            }
         };
         RequestWire {
             model: self.model.api_id(),
@@ -434,7 +529,8 @@ mod tests {
 
     #[test]
     fn sonnet_4_6_custom_temperature() {
-        let v = req(Model::sonnet_4_6().with_temperature(0.3).with_effort(Sonnet4_6Effort::Low));
+        let t = Temperature::new(0.3).unwrap();
+        let v = req(Model::sonnet_4_6().with_temperature(t).with_effort(Sonnet4_6Effort::Low));
         approx(&v["temperature"], 0.3);
         assert_eq!(v["output_config"]["effort"], "low");
     }
@@ -447,7 +543,30 @@ mod tests {
         assert!(v.get("thinking").is_none());
         assert!(v.get("output_config").is_none(), "effort must not be sent on Haiku 4.5");
 
-        approx(&req(Model::haiku_4_5().with_temperature(0.5))["temperature"], 0.5);
+        approx(&req(Model::haiku_4_5().with_temperature(Temperature::new(0.5).unwrap()))["temperature"], 0.5);
+    }
+
+    #[test]
+    fn temperature_rejects_invalid() {
+        assert_eq!(Temperature::new(f32::NAN), Err(TemperatureError::NotFinite));
+        assert_eq!(Temperature::new(f32::INFINITY), Err(TemperatureError::NotFinite));
+        assert_eq!(Temperature::new(f32::NEG_INFINITY), Err(TemperatureError::NotFinite));
+        assert_eq!(Temperature::new(-0.1), Err(TemperatureError::OutOfRange(-0.1)));
+        assert_eq!(Temperature::new(1.1), Err(TemperatureError::OutOfRange(1.1)));
+        assert!(Temperature::new(0.0).is_ok());
+        assert!(Temperature::new(1.0).is_ok());
+        assert_eq!(Temperature::default().get(), 1.0);
+    }
+
+    #[test]
+    fn haiku_4_5_legacy_thinking() {
+        let v = req(Model::haiku_4_5().with_thinking(2048));
+        assert_eq!(v["thinking"]["type"], "enabled");
+        assert_eq!(v["thinking"]["budget_tokens"], 2048);
+        assert!(v["thinking"].get("display").is_none(), "`display` is adaptive-only");
+        approx(&v["temperature"], 1.0);
+
+        assert!(req(Model::haiku_4_5().with_thinking(2048).with_thinking_off()).get("thinking").is_none());
     }
 
     #[test]
