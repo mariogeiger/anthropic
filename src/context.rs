@@ -516,6 +516,22 @@ mod tests {
     }
 
     #[test]
+    fn conflicting_ttl_at_same_position_rejected() {
+        let mut ctx = Context::new();
+        ctx.push_user_text("one");
+        ctx.roll_cache(CacheSlot::S0, CacheTtl::OneHour).unwrap();
+        // S1 targets the same tail block with a different TTL — committing would
+        // overwrite S0's cache_control and desync slot bookkeeping.
+        assert_eq!(
+            ctx.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap_err(),
+            RollCacheError::ConflictingTtlAtSamePosition,
+        );
+        // Same position with matching TTL is fine (idempotent co-location).
+        ctx.roll_cache(CacheSlot::S1, CacheTtl::OneHour).unwrap();
+        assert_eq!(ctx.breakpoint_count(), 2);
+    }
+
+    #[test]
     fn clear_cache_removes_metadata() {
         let mut ctx = Context::new();
         ctx.push_user_text("hi");
