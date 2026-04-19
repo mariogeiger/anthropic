@@ -306,11 +306,8 @@ impl Context {
         text: impl Into<String>,
         ttl: CacheTtl,
     ) -> Result<Self, AnchorError> {
-        if self.slots[slot.idx()].is_some() {
-            return Err(AnchorError::SlotAlreadyInUse(slot));
-        }
-        self.system = Some(SystemPrompt { text: text.into(), cache_control: Some(CacheControl::ephemeral(ttl)) });
-        self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::System, ttl });
+        self.system = Some(SystemPrompt { text: text.into(), cache_control: None });
+        self.place_anchor(slot, SlotLocation::System, ttl)?;
         Ok(self)
     }
 
@@ -320,21 +317,12 @@ impl Context {
     }
 
     /// Attach a cache breakpoint on the last tool.
-    pub fn with_tools_cached(
-        mut self,
-        slot: CacheSlot,
-        mut tools: Vec<Tool>,
-        ttl: CacheTtl,
-    ) -> Result<Self, AnchorError> {
-        if self.slots[slot.idx()].is_some() {
-            return Err(AnchorError::SlotAlreadyInUse(slot));
-        }
-        let Some(last) = tools.last_mut() else {
+    pub fn with_tools_cached(mut self, slot: CacheSlot, tools: Vec<Tool>, ttl: CacheTtl) -> Result<Self, AnchorError> {
+        if tools.is_empty() {
             return Err(AnchorError::NoToolsToCache);
-        };
-        last.cache_control = Some(CacheControl::ephemeral(ttl));
+        }
         self.tools = tools;
-        self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::Tools, ttl });
+        self.place_anchor(slot, SlotLocation::Tools, ttl)?;
         Ok(self)
     }
 
@@ -425,6 +413,20 @@ impl Context {
         let m = self.messages.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
         let b = self.messages[m].content.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
         Ok((m, b))
+    }
+
+    /// Record an anchor (System/Tools) in `slot` and stamp its `cache_control`.
+    /// Caller must have already installed `self.system` / `self.tools` with
+    /// `cache_control: None`. Refuses to overwrite an occupied slot so anchors
+    /// never clobber an existing breakpoint.
+    fn place_anchor(&mut self, slot: CacheSlot, location: SlotLocation, ttl: CacheTtl) -> Result<(), AnchorError> {
+        debug_assert!(matches!(location, SlotLocation::System | SlotLocation::Tools));
+        if self.slots[slot.idx()].is_some() {
+            return Err(AnchorError::SlotAlreadyInUse(slot));
+        }
+        self.write_cache_control(location, Some(CacheControl::ephemeral(ttl)));
+        self.slots[slot.idx()] = Some(SlotState { location, ttl });
+        Ok(())
     }
 
     fn write_cache_control(&mut self, loc: SlotLocation, cc: Option<CacheControl>) {
