@@ -48,6 +48,8 @@ The one kind of omission the crate uses is for optional fields that are genuinel
 
 ## 6. Scope
 
-Bindings only. The crate produces a serializable request body for the Messages API and its token-counting sibling, and nothing else — no HTTP client, no response parser, no retry logic, no streaming decoder. Callers bring their own HTTP stack.
+Bindings only. The crate produces a serializable request body for the Messages API and its token-counting sibling — no HTTP client, no JSON response deserializer, no streaming decoder, no retry logic. Callers bring their own HTTP stack.
+
+Static lookup tables for API-documented wire values are part of the wire vocabulary and stay in-scope: enum `from_str` (inverse of `as_str`), and the documented HTTP-status-code → `ErrorType` mapping. The test for "in-scope" is that the helper is a pure `match` on a primitive (`&str`, `u16`) — no string manipulation, no JSON field names, no runtime state. A constant like `INPUT_TOKENS = "input_tokens"` does not qualify: it only helps callers parse a response body, which is out of scope.
 
 The crate tracks the current Claude tiers. Older models are not wired up by default, but adding them is a normal extension — follow the per-model-type approach in §2.
