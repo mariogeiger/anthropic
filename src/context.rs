@@ -223,7 +223,10 @@ pub enum RollCacheError {
     SlotOccupiedByAnchor(CacheSlot),
     /// Context has no message content to attach a rolling breakpoint to.
     NoBlocksToCache,
-    /// Target position already has a different TTL (Anthropic returns 400).
+    /// Another slot already points at this position with a different TTL.
+    /// Committing would overwrite the other slot's `cache_control` and desync
+    /// slot bookkeeping from the content. The API never sees this case (a
+    /// block carries one `cache_control`); it is an internal invariant.
     ConflictingTtlAtSamePosition,
     /// Would violate the 1h-before-5m ordering rule.
     TtlOrderingViolation,
@@ -237,7 +240,10 @@ impl std::fmt::Display for RollCacheError {
             }
             RollCacheError::NoBlocksToCache => write!(f, "no content blocks to attach a cache breakpoint to"),
             RollCacheError::ConflictingTtlAtSamePosition => {
-                write!(f, "target position already has a different TTL (API returns 400)")
+                write!(
+                    f,
+                    "another slot already points at this position with a different TTL (would corrupt slot bookkeeping)"
+                )
             }
             RollCacheError::TtlOrderingViolation => write!(f, "all 1h breakpoints must come before any 5m breakpoints"),
         }
@@ -331,7 +337,8 @@ impl Context {
         let (msg, block) = self.tail_position()?;
         let target = SlotLocation::Message { msg, block };
 
-        // Another slot at the same position with a different TTL → API 400.
+        // Another slot at the same position with a different TTL would
+        // overwrite its cache_control on commit — refuse before mutating.
         for (j, other) in self.slots.iter().enumerate() {
             if j != i
                 && let Some(s) = other
