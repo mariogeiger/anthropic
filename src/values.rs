@@ -84,13 +84,6 @@ api_enum! { CacheControlType { Ephemeral => "ephemeral" } }
 
 api_enum! { CacheTtl { FiveMinutes => "5m", OneHour => "1h" } }
 
-impl CacheTtl {
-    /// Pick the TTL bucket for `secs` (≤300s → 5m, else 1h).
-    pub fn from_secs(secs: u32) -> Self {
-        if secs <= 300 { Self::FiveMinutes } else { Self::OneHour }
-    }
-}
-
 /// JSON field names in the `usage` response object.
 pub mod usage_fields {
     pub const INPUT_TOKENS: &str = "input_tokens";
