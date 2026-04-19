@@ -9,6 +9,13 @@
 //! Types model what the model *sees*, not wire-format field presence: every
 //! `Option` represents a real runtime distinction. `SystemPrompt` is one struct
 //! with two wire shapes (bare string vs one-element array); the serializer picks.
+//!
+//! `cache_control` is not reachable from outside the crate: `CacheControl` has
+//! no public constructor and no public fields, and the `cache_control` slot on
+//! every content block and `Tool` is crate-private. The only way to attach a
+//! breakpoint is through `CacheSlot` via `with_system_cached`,
+//! `with_tools_cached`, or `roll_cache`, which keeps slot bookkeeping
+//! consistent with content.
 
 use crate::{CacheControlType, CacheTtl, ImageMediaType};
 use serde::Serialize;
@@ -19,12 +26,12 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub ttl: &'static str,
+    pub(crate) kind: &'static str,
+    pub(crate) ttl: &'static str,
 }
 
 impl CacheControl {
-    pub fn ephemeral(ttl: CacheTtl) -> Self {
+    pub(crate) fn ephemeral(ttl: CacheTtl) -> Self {
         Self { kind: CacheControlType::Ephemeral.as_str(), ttl: ttl.as_str() }
     }
 }
@@ -85,83 +92,114 @@ impl ImageSource {
 #[serde(untagged)]
 pub enum ToolResultContent {
     Text(String),
-    Blocks(Vec<ToolResultBlock>),
+    Blocks(Vec<ToolResultItem>),
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolResultBlock {
+pub enum ToolResultItem {
     Text { text: String },
     Image { source: ImageSource },
 }
 
 // ── Content blocks ───────────────────────────────────────────────────────────
+// Each variant wraps a `*Block` struct whose `cache_control` is crate-private:
+// callers can read the content fields but cannot set, swap, or clone a
+// `CacheControl` into place. The only path is through a `CacheSlot`.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TextBlock {
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageBlock {
+    pub source: ImageSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolUseBlock {
+    pub id: String,
+    pub name: String,
+    pub input: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolResultBlock {
+    pub tool_use_id: String,
+    pub content: ToolResultContent,
+    pub is_error: bool, // runtime bool, not Option<bool>: every result is error-or-not
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThinkingBlock {
+    pub thinking: String,
+    pub signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RedactedThinkingBlock {
+    pub data: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text {
-        text: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
-    Image {
-        source: ImageSource,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: Value,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: ToolResultContent,
-        is_error: bool, // runtime bool, not Option<bool>: every result is error-or-not
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
-    Thinking {
-        thinking: String,
-        signature: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
-    RedactedThinking {
-        data: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
-    },
+    Text(TextBlock),
+    Image(ImageBlock),
+    ToolUse(ToolUseBlock),
+    ToolResult(ToolResultBlock),
+    Thinking(ThinkingBlock),
+    RedactedThinking(RedactedThinkingBlock),
 }
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into(), cache_control: None }
+        Self::Text(TextBlock { text: text.into(), cache_control: None })
     }
     pub fn image(source: ImageSource) -> Self {
-        Self::Image { source, cache_control: None }
+        Self::Image(ImageBlock { source, cache_control: None })
     }
     pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
-        Self::ToolUse { id: id.into(), name: name.into(), input, cache_control: None }
+        Self::ToolUse(ToolUseBlock { id: id.into(), name: name.into(), input, cache_control: None })
     }
     pub fn tool_result(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
-        Self::ToolResult { tool_use_id: tool_use_id.into(), content, is_error: false, cache_control: None }
+        Self::ToolResult(ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content,
+            is_error: false,
+            cache_control: None,
+        })
     }
     pub fn tool_result_err(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
-        Self::ToolResult { tool_use_id: tool_use_id.into(), content, is_error: true, cache_control: None }
+        Self::ToolResult(ToolResultBlock {
+            tool_use_id: tool_use_id.into(),
+            content,
+            is_error: true,
+            cache_control: None,
+        })
     }
 
     fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
         match self {
-            Self::Text { cache_control, .. }
-            | Self::Image { cache_control, .. }
-            | Self::ToolUse { cache_control, .. }
-            | Self::ToolResult { cache_control, .. }
-            | Self::Thinking { cache_control, .. }
-            | Self::RedactedThinking { cache_control, .. } => cache_control,
+            Self::Text(b) => &mut b.cache_control,
+            Self::Image(b) => &mut b.cache_control,
+            Self::ToolUse(b) => &mut b.cache_control,
+            Self::ToolResult(b) => &mut b.cache_control,
+            Self::Thinking(b) => &mut b.cache_control,
+            Self::RedactedThinking(b) => &mut b.cache_control,
         }
     }
 }
@@ -181,7 +219,7 @@ pub struct Tool {
     pub description: Option<String>,
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_control: Option<CacheControl>,
+    pub(crate) cache_control: Option<CacheControl>,
 }
 
 impl Tool {
