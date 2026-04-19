@@ -179,8 +179,8 @@ impl Sonnet4_6 {
 
     /// Enable adaptive thinking. Overrides any previously-set temperature
     /// (API pins it to 1.0 internally under adaptive).
-    pub fn with_adaptive_thinking(mut self) -> Self {
-        self.sampling = Sonnet4_6Sampling::Adaptive;
+    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
+        self.sampling = Sonnet4_6Sampling::Adaptive { display };
         self
     }
 }
@@ -188,7 +188,9 @@ impl Sonnet4_6 {
 pub enum Sonnet4_6Sampling {
     /// `Temperature(1.0)` matches the API default when `temperature` is omitted.
     Temperature(f32),
-    Adaptive,
+    Adaptive {
+        display: ThinkingDisplay,
+    },
 }
 
 pub enum Sonnet4_6Effort {
@@ -321,8 +323,7 @@ impl Serialize for Request<'_> {
             Model::Sonnet4_6(p) => {
                 let (t, th) = match p.sampling {
                     Sonnet4_6Sampling::Temperature(t) => (Some(t), None),
-                    // `display` is Opus 4.7-only
-                    Sonnet4_6Sampling::Adaptive => (None, Some(adaptive(None))),
+                    Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display.as_str())))),
                 };
                 (t, th, effort(p.effort.as_str()))
             }
@@ -418,12 +419,17 @@ mod tests {
     }
 
     #[test]
-    fn sonnet_4_6_adaptive_drops_temperature_and_display() {
-        let v = req(Model::sonnet_4_6().with_adaptive_thinking().with_effort(Sonnet4_6Effort::Max));
+    fn sonnet_4_6_adaptive_drops_temperature() {
+        let v = req(Model::sonnet_4_6()
+            .with_adaptive_thinking(ThinkingDisplay::Summarized)
+            .with_effort(Sonnet4_6Effort::Max));
         assert!(v.get("temperature").is_none());
         assert_eq!(v["thinking"]["type"], "adaptive");
-        assert!(v["thinking"].get("display").is_none(), "`display` is Opus 4.7-only");
+        assert_eq!(v["thinking"]["display"], "summarized");
         assert_eq!(v["output_config"]["effort"], "max");
+
+        let v = req(Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Omitted));
+        assert_eq!(v["thinking"]["display"], "omitted");
     }
 
     #[test]
