@@ -30,6 +30,8 @@ When the wire format offers multiple shapes for the same runtime concept (a bare
 
 Defaults come from the provider's documentation. The crate does not invent its own defaults or normalize values on the caller's behalf.
 
+Scalar parameters that the API accepts unconditionally — those with a documented server-side default — are modeled as plain (non-`Option`) fields whose `Default::default()` mirrors the value the API documents as its default. They are *always* emitted on the wire. The crate never relies on server-side defaulting via field omission: emitting explicitly makes the request body a complete record of what the model sees, and shields callers from silent behavior changes if the provider's defaults shift. Omission is reserved for the runtime-distinction case above (e.g. `thinking` off vs on), not for "the value happens to equal the default."
+
 ## 4. Conversation state vs. per-call parameters
 
 Conversation state — system prompt, tools, message history, cache breakpoints — is stable across turns and lives in its own type. Per-call parameters — the model, token limits, stop sequences — live on the request type, which borrows the conversation state.
@@ -40,7 +42,7 @@ Auxiliary endpoints (for example, token counting) follow the same pattern: same 
 
 ## 5. Explicit serialization, no omit-if-default
 
-Serialization emits whatever the value represents. There is no "omit if equal to default" optimization and no hidden normalization — reading a request value tells you exactly what the model will see.
+Serialization emits whatever the value represents. There is no "omit if equal to default" optimization and no hidden normalization — reading a request value tells you exactly what the model will see. Scalar parameters with a documented server-side default are still emitted explicitly, with their `Default::default()` set to the value the API documents (see §3).
 
 The one kind of omission the crate uses is for optional fields that are genuinely absent at runtime (see §3). An absent optional is a real runtime absence, not a default elided on the wire.
 
