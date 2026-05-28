@@ -8,3 +8,8 @@ repository = "https://github.com/mariogeiger/anthropic"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[dev-dependencies]
+# Live-API integration tests only (tests/live_api.rs). The crate itself stays
+# bindings-only (§6) — this HTTP client never leaks into the library.
+ureq = "2"

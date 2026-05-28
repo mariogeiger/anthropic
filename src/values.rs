@@ -37,10 +37,10 @@ api_enum! { ImageMediaType {
 }}
 
 // `thinking.type`. `Enabled` is the legacy fixed-budget form (deprecated on Sonnet 4.6,
-// removed on Opus 4.7); `Adaptive` is the only form currently emitted by `Request`.
+// removed on Opus 4.7+); `Adaptive` is the only form currently emitted by `Request`.
 api_enum! { ThinkingType { Enabled => "enabled", Adaptive => "adaptive" } }
 
-// Opus 4.7 `thinking.display`. Default `Omitted` = thinking streams but text is empty.
+// Opus 4.7+ `thinking.display`. Default `Omitted` = thinking streams but text is empty.
 api_enum! { ThinkingDisplay { Summarized => "summarized", Omitted => "omitted" } }
 
 api_enum! { roundtrip StopReason {

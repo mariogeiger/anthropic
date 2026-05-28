@@ -4,7 +4,7 @@ Rust bindings for the [Anthropic Messages API](https://docs.anthropic.com/en/api
 
 Bring your own HTTP client. This crate hands you a `Serialize` request body; you POST it.
 
-Currently modeled: `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+Currently modeled: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
 
 ## Example
 
@@ -18,7 +18,7 @@ use anthropic::{
 let mut ctx = Context::new().with_system("you are helpful");
 ctx.push_user_text("hello");
 
-let body = serde_json::to_value(Request::new(&ctx, Model::opus_4_7(), 1024))?;
+let body = serde_json::to_value(Request::new(&ctx, Model::opus_4_8(), 1024))?;
 
 reqwest::Client::new()
     .post(format!("{API_BASE}{MESSAGES_PATH}"))

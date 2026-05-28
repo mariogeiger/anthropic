@@ -2,7 +2,7 @@
 //!
 //! Each `Model` variant carries only the parameters its underlying model accepts —
 //! unrepresentable combinations cannot be constructed. Only the latest model in
-//! each tier is supported: Opus 4.7, Sonnet 4.6, Haiku 4.5.
+//! each tier is supported: Opus 4.8, Sonnet 4.6, Haiku 4.5.
 
 #![allow(non_camel_case_types)]
 
@@ -67,7 +67,7 @@ impl Default for Temperature {
 /// field is meaningful (e.g. `CountRequest`, which ignores sampling/thinking).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelId {
-    Opus4_7,
+    Opus4_8,
     Sonnet4_6,
     Haiku4_5,
 }
@@ -76,7 +76,7 @@ impl ModelId {
     /// The `model` field value sent on the wire.
     pub fn api_id(self) -> &'static str {
         match self {
-            ModelId::Opus4_7 => "claude-opus-4-7",
+            ModelId::Opus4_8 => "claude-opus-4-8",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
             ModelId::Haiku4_5 => "claude-haiku-4-5",
         }
@@ -85,7 +85,7 @@ impl ModelId {
 
 /// A Claude model plus its per-call parameters.
 pub enum Model {
-    Opus4_7(Opus4_7),
+    Opus4_8(Opus4_8),
     Sonnet4_6(Sonnet4_6),
     Haiku4_5(Haiku4_5),
 }
@@ -94,7 +94,7 @@ impl Model {
     /// Identity without per-call parameters.
     pub fn id(&self) -> ModelId {
         match self {
-            Model::Opus4_7(_) => ModelId::Opus4_7,
+            Model::Opus4_8(_) => ModelId::Opus4_8,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
             Model::Haiku4_5(_) => ModelId::Haiku4_5,
         }
@@ -107,8 +107,8 @@ impl Model {
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
-    pub fn opus_4_7() -> Opus4_7 {
-        Opus4_7::default()
+    pub fn opus_4_8() -> Opus4_8 {
+        Opus4_8::default()
     }
     pub fn sonnet_4_6() -> Sonnet4_6 {
         Sonnet4_6::default()
@@ -118,9 +118,9 @@ impl Model {
     }
 }
 
-impl From<Opus4_7> for Model {
-    fn from(p: Opus4_7) -> Self {
-        Model::Opus4_7(p)
+impl From<Opus4_8> for Model {
+    fn from(p: Opus4_8) -> Self {
+        Model::Opus4_8(p)
     }
 }
 impl From<Sonnet4_6> for Model {
@@ -134,44 +134,44 @@ impl From<Haiku4_5> for Model {
     }
 }
 
-// ── Opus 4.7 ─────────────────────────────────────────────────────────────────
+// ── Opus 4.8 ─────────────────────────────────────────────────────────────────
 // No sampling (temperature/top_p/top_k rejected). Adaptive thinking only;
 // legacy `{type: "enabled", budget_tokens}` is removed.
 
-pub struct Opus4_7 {
-    pub thinking: Opus4_7Thinking,
-    pub effort: Opus4_7Effort,
+pub struct Opus4_8 {
+    pub thinking: Opus4_8Thinking,
+    pub effort: Opus4_8Effort,
 }
 
-impl Default for Opus4_7 {
+impl Default for Opus4_8 {
     fn default() -> Self {
-        Self { thinking: Opus4_7Thinking::Off, effort: Opus4_7Effort::High }
+        Self { thinking: Opus4_8Thinking::Off, effort: Opus4_8Effort::High }
     }
 }
 
-impl Opus4_7 {
+impl Opus4_8 {
     pub fn new() -> Self {
         Self::default()
     }
-    pub fn with_effort(mut self, effort: Opus4_7Effort) -> Self {
+    pub fn with_effort(mut self, effort: Opus4_8Effort) -> Self {
         self.effort = effort;
         self
     }
 
-    /// Enable adaptive thinking. `display` defaults to `Omitted` on Opus 4.7
+    /// Enable adaptive thinking. `display` defaults to `Omitted` on Opus 4.8
     /// (blocks stream but text is empty); pass `Summarized` for visible text.
     pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        self.thinking = Opus4_7Thinking::Adaptive { display };
+        self.thinking = Opus4_8Thinking::Adaptive { display };
         self
     }
 
     pub fn with_thinking_off(mut self) -> Self {
-        self.thinking = Opus4_7Thinking::Off;
+        self.thinking = Opus4_8Thinking::Off;
         self
     }
 }
 
-pub enum Opus4_7Thinking {
+pub enum Opus4_8Thinking {
     /// `thinking` field omitted from the request.
     Off,
     Adaptive {
@@ -179,14 +179,14 @@ pub enum Opus4_7Thinking {
     },
 }
 
-// `Xhigh` is exclusive to Opus 4.7.
-api_enum! { Opus4_7Effort {
+// `Xhigh` is Opus-tier only (Opus 4.7 and later); Sonnet 4.6 rejects it (400).
+api_enum! { Opus4_8Effort {
     Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
 }}
 
 // ── Sonnet 4.6 ───────────────────────────────────────────────────────────────
 // Temperature OR adaptive thinking (API forces temperature=1.0 under adaptive).
-// No `Xhigh` effort (Opus 4.7-only).
+// No `Xhigh` effort (Opus-tier only; Sonnet rejects it).
 
 pub struct Sonnet4_6 {
     pub sampling: Sonnet4_6Sampling,
@@ -372,11 +372,11 @@ impl Serialize for Request<'_> {
         };
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
-            Model::Opus4_7(p) => (
+            Model::Opus4_8(p) => (
                 None,
                 match &p.thinking {
-                    Opus4_7Thinking::Off => None,
-                    Opus4_7Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
+                    Opus4_8Thinking::Off => None,
+                    Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
                 },
                 effort(p.effort.as_str()),
             ),
@@ -449,30 +449,30 @@ mod tests {
     }
 
     #[test]
-    fn opus_4_7_default() {
-        let v = req(Model::opus_4_7());
-        assert_eq!(v["model"], "claude-opus-4-7");
-        assert!(v.get("temperature").is_none(), "temperature must not be sent on Opus 4.7");
+    fn opus_4_8_default() {
+        let v = req(Model::opus_4_8());
+        assert_eq!(v["model"], "claude-opus-4-8");
+        assert!(v.get("temperature").is_none(), "temperature must not be sent on Opus 4.8");
         assert!(v.get("thinking").is_none());
         assert_eq!(v["output_config"]["effort"], "high");
     }
 
     #[test]
-    fn opus_4_7_adaptive_thinking() {
-        let v = req(Model::opus_4_7().with_adaptive_thinking(ThinkingDisplay::Summarized));
+    fn opus_4_8_adaptive_thinking() {
+        let v = req(Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Summarized));
         assert_eq!(v["thinking"]["type"], "adaptive");
         assert_eq!(v["thinking"]["display"], "summarized");
         assert!(v.get("temperature").is_none());
 
         let v =
-            req(Model::opus_4_7().with_adaptive_thinking(ThinkingDisplay::Omitted).with_effort(Opus4_7Effort::Xhigh));
+            req(Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Omitted).with_effort(Opus4_8Effort::Xhigh));
         assert_eq!(v["thinking"]["display"], "omitted");
         assert_eq!(v["output_config"]["effort"], "xhigh");
     }
 
     #[test]
-    fn opus_4_7_max_effort() {
-        assert_eq!(req(Model::opus_4_7().with_effort(Opus4_7Effort::Max))["output_config"]["effort"], "max");
+    fn opus_4_8_max_effort() {
+        assert_eq!(req(Model::opus_4_8().with_effort(Opus4_8Effort::Max))["output_config"]["effort"], "max");
     }
 
     #[test]
@@ -542,8 +542,8 @@ mod tests {
 
     #[test]
     fn count_request_omits_sampling_and_max_tokens() {
-        let v = count(ModelId::Opus4_7);
-        assert_eq!(v["model"], "claude-opus-4-7");
+        let v = count(ModelId::Opus4_8);
+        assert_eq!(v["model"], "claude-opus-4-8");
         assert!(v["messages"].is_array());
         for f in ["max_tokens", "temperature", "thinking", "output_config", "stop_sequences"] {
             assert!(v.get(f).is_none(), "{f} should be omitted");
@@ -562,8 +562,8 @@ mod tests {
 
     #[test]
     fn model_id_from_configured_model() {
-        let m: Model = Model::opus_4_7().with_adaptive_thinking(ThinkingDisplay::Summarized).into();
-        assert_eq!(m.id(), ModelId::Opus4_7);
+        let m: Model = Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Summarized).into();
+        assert_eq!(m.id(), ModelId::Opus4_8);
         assert_eq!(m.id().api_id(), m.api_id());
     }
 
@@ -571,12 +571,12 @@ mod tests {
     fn stop_sequences_roundtrip() {
         let ctx = Context::new();
         let v = serde_json::to_value(
-            Request::new(&ctx, Model::opus_4_7(), 1024).stop_sequences(vec!["STOP".into(), "END".into()]),
+            Request::new(&ctx, Model::opus_4_8(), 1024).stop_sequences(vec!["STOP".into(), "END".into()]),
         )
         .unwrap();
         assert_eq!(v["stop_sequences"][0], "STOP");
         assert_eq!(v["stop_sequences"][1], "END");
         // Empty vec is skipped.
-        assert!(req(Model::opus_4_7()).get("stop_sequences").is_none());
+        assert!(req(Model::opus_4_8()).get("stop_sequences").is_none());
     }
 }

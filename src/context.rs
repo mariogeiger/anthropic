@@ -538,13 +538,13 @@ mod tests {
     use crate::request::{Model, Request};
 
     fn req(ctx: &Context) -> serde_json::Value {
-        serde_json::to_value(Request::new(ctx, Model::opus_4_7(), 1024)).unwrap()
+        serde_json::to_value(Request::new(ctx, Model::opus_4_8(), 1024)).unwrap()
     }
 
     #[test]
     fn empty_request_serializes() {
         let v = req(&Context::new());
-        assert_eq!(v["model"], "claude-opus-4-7");
+        assert_eq!(v["model"], "claude-opus-4-8");
         assert_eq!(v["max_tokens"], 1024);
         assert!(v["messages"].is_array());
     }
