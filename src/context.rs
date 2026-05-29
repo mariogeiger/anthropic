@@ -538,7 +538,7 @@ mod tests {
     use crate::request::{Model, Request};
 
     fn req(ctx: &Context) -> serde_json::Value {
-        serde_json::to_value(Request::new(ctx, Model::opus_4_8(), 1024)).unwrap()
+        serde_json::to_value(Request::new(ctx, Model::opus_4_8(), 1024).unwrap()).unwrap()
     }
 
     #[test]

@@ -258,6 +258,8 @@ impl Haiku4_5 {
 
     /// Enable legacy fixed-budget thinking. Haiku 4.5 accepts the legacy
     /// `{type: "enabled", budget_tokens: N}` form; adaptive thinking is rejected.
+    /// `budget_tokens` must be below the request's `max_tokens` — `Request::new`
+    /// enforces this and returns `RequestError` otherwise.
     pub fn with_thinking(mut self, budget_tokens: u32) -> Self {
         self.thinking = Haiku4_5Thinking::Enabled { budget_tokens };
         self
@@ -278,6 +280,29 @@ pub enum Haiku4_5Thinking {
 
 // ── Request ──────────────────────────────────────────────────────────────────
 
+/// Construction-time rejection for a cross-field invariant the §4 state/per-call
+/// split can't express in the type system. Same "error before commit" approach
+/// as the cache ops (§1): refuse rather than let the API answer with a 400.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestError {
+    /// Legacy fixed-budget thinking requires `budget_tokens < max_tokens`; the
+    /// API rejects `budget_tokens >= max_tokens` with a 400. Only reachable on
+    /// Haiku 4.5 via `with_thinking` — adaptive-thinking models carry no budget.
+    ThinkingBudgetExceedsMaxTokens { budget_tokens: u32, max_tokens: u32 },
+}
+
+impl std::fmt::Display for RequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens } => {
+                write!(f, "thinking budget_tokens ({budget_tokens}) must be less than max_tokens ({max_tokens})")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RequestError {}
+
 /// Borrowed `Context` + per-call params. Serializes to `POST /v1/messages`.
 pub struct Request<'a> {
     pub context: &'a Context,
@@ -287,8 +312,19 @@ pub struct Request<'a> {
 }
 
 impl<'a> Request<'a> {
-    pub fn new(context: &'a Context, model: impl Into<Model>, max_tokens: u32) -> Self {
-        Self { context, model: model.into(), max_tokens, stop_sequences: Vec::new() }
+    /// `new` is the single construction path, so the check can't be bypassed.
+    /// It validates the one invariant the type system can't (the model carries
+    /// `budget_tokens`, the request carries `max_tokens` — they only meet here):
+    /// legacy `budget_tokens` must be below `max_tokens`.
+    pub fn new(context: &'a Context, model: impl Into<Model>, max_tokens: u32) -> Result<Self, RequestError> {
+        let model = model.into();
+        if let Model::Haiku4_5(h) = &model
+            && let Haiku4_5Thinking::Enabled { budget_tokens } = h.thinking
+            && budget_tokens >= max_tokens
+        {
+            return Err(RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens });
+        }
+        Ok(Self { context, model, max_tokens, stop_sequences: Vec::new() })
     }
 
     pub fn stop_sequences(mut self, seqs: Vec<String>) -> Self {
@@ -438,7 +474,7 @@ mod tests {
     use serde_json::Value;
 
     fn req(m: impl Into<Model>) -> Value {
-        serde_json::to_value(Request::new(&Context::new(), m, 1024)).unwrap()
+        serde_json::to_value(Request::new(&Context::new(), m, 1024).unwrap()).unwrap()
     }
     fn count(id: ModelId) -> Value {
         serde_json::to_value(CountRequest::new(&Context::new(), id)).unwrap()
@@ -531,13 +567,30 @@ mod tests {
 
     #[test]
     fn haiku_4_5_legacy_thinking() {
-        let v = req(Model::haiku_4_5().with_thinking(2048));
+        // budget_tokens must stay below max_tokens (validated by `Request::new`).
+        let ctx = Context::new();
+        let v = serde_json::to_value(Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1536).unwrap()).unwrap();
         assert_eq!(v["thinking"]["type"], "enabled");
-        assert_eq!(v["thinking"]["budget_tokens"], 2048);
+        assert_eq!(v["thinking"]["budget_tokens"], 1024);
         assert!(v["thinking"].get("display").is_none(), "`display` is adaptive-only");
         approx(&v["temperature"], 1.0);
 
         assert!(req(Model::haiku_4_5().with_thinking(2048).with_thinking_off()).get("thinking").is_none());
+    }
+
+    #[test]
+    fn haiku_thinking_budget_must_be_below_max_tokens() {
+        let ctx = Context::new();
+        // budget_tokens >= max_tokens is refused before the API can 400.
+        assert_eq!(
+            Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1024).err(),
+            Some(RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens: 1024, max_tokens: 1024 }),
+        );
+        assert!(Request::new(&ctx, Model::haiku_4_5().with_thinking(2000), 1000).is_err());
+        // budget below max is fine; models without a thinking budget never fail.
+        assert!(Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1536).is_ok());
+        assert!(Request::new(&ctx, Model::haiku_4_5(), 16).is_ok());
+        assert!(Request::new(&ctx, Model::opus_4_8(), 16).is_ok());
     }
 
     #[test]
@@ -571,7 +624,7 @@ mod tests {
     fn stop_sequences_roundtrip() {
         let ctx = Context::new();
         let v = serde_json::to_value(
-            Request::new(&ctx, Model::opus_4_8(), 1024).stop_sequences(vec!["STOP".into(), "END".into()]),
+            Request::new(&ctx, Model::opus_4_8(), 1024).unwrap().stop_sequences(vec!["STOP".into(), "END".into()]),
         )
         .unwrap();
         assert_eq!(v["stop_sequences"][0], "STOP");

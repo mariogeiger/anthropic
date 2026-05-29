@@ -18,7 +18,7 @@ use anthropic::{
 let mut ctx = Context::new().with_system("you are helpful");
 ctx.push_user_text("hello");
 
-let body = serde_json::to_value(Request::new(&ctx, Model::opus_4_8(), 1024))?;
+let body = serde_json::to_value(Request::new(&ctx, Model::opus_4_8(), 1024)?)?;
 
 reqwest::Client::new()
     .post(format!("{API_BASE}{MESSAGES_PATH}"))

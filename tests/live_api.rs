@@ -50,26 +50,37 @@ fn function_name() -> &'static str {
 
 /// POST any serializable body to `path`, returning `(status, parsed_body)`.
 /// Non-2xx is captured rather than thrown, so negative tests can inspect it.
+/// Retries transport-level failures (e.g. connection resets) with backoff — a
+/// real HTTP response, 4xx included, is the API's answer and returns at once.
 fn post<T: serde::Serialize>(path: &str, body: &T, key: &str) -> (u16, Value) {
     let url = format!("{}{}", anthropic::API_BASE, path);
     let payload = serde_json::to_string(body).expect("serialize body");
-    let result = ureq::post(&url)
-        .set(anthropic::HEADER_API_KEY, key)
-        .set(anthropic::HEADER_VERSION, anthropic::VERSION)
-        .set("content-type", "application/json")
-        .send_string(&payload);
-    match result {
-        Ok(resp) => {
-            let code = resp.status();
-            let text = resp.into_string().expect("read body");
-            (code, serde_json::from_str(&text).unwrap_or(Value::Null))
+    let mut last = String::new();
+    for attempt in 0..5u64 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(400 * attempt));
         }
-        Err(ureq::Error::Status(code, resp)) => {
-            let text = resp.into_string().unwrap_or_default();
-            (code, serde_json::from_str(&text).unwrap_or(Value::Null))
+        match ureq::post(&url)
+            .set(anthropic::HEADER_API_KEY, key)
+            .set(anthropic::HEADER_VERSION, anthropic::VERSION)
+            .set("content-type", "application/json")
+            .send_string(&payload)
+        {
+            Ok(resp) => {
+                let code = resp.status();
+                let text = resp.into_string().expect("read body");
+                return (code, serde_json::from_str(&text).unwrap_or(Value::Null));
+            }
+            // A real HTTP status (incl. 4xx/5xx) — the API answered; don't retry.
+            Err(ureq::Error::Status(code, resp)) => {
+                let text = resp.into_string().unwrap_or_default();
+                return (code, serde_json::from_str(&text).unwrap_or(Value::Null));
+            }
+            // Connection reset / DNS / TLS — transient; retry.
+            Err(ureq::Error::Transport(t)) => last = t.to_string(),
         }
-        Err(e) => panic!("transport error: {e}"),
     }
+    panic!("transport error after retries: {last}");
 }
 
 fn msg(path: &str, body: &Value, key: &str) -> (u16, Value) {
@@ -100,7 +111,7 @@ fn user_ctx(text: &str) -> Context {
 fn live_ok_opus_4_8_default() {
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16).unwrap(), &key);
     assert_ok(code, &body);
     assert_eq!(body["model"], "claude-opus-4-8");
 }
@@ -114,7 +125,7 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
     let model = Model::opus_4_8()
         .with_adaptive_thinking(ThinkingDisplay::Summarized)
         .with_effort(Opus4_8Effort::Xhigh);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -123,7 +134,7 @@ fn live_ok_sonnet_4_6_temperature() {
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
     let model = Model::sonnet_4_6().with_temperature(Temperature::new(0.3).unwrap());
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
     assert_eq!(body["model"], "claude-sonnet-4-6");
 }
@@ -136,7 +147,7 @@ fn live_ok_sonnet_4_6_adaptive_max_effort() {
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model =
         Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Sonnet4_6Effort::Max);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -144,7 +155,7 @@ fn live_ok_sonnet_4_6_adaptive_max_effort() {
 fn live_ok_haiku_4_5_temperature() {
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::haiku_4_5(), 16), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::haiku_4_5(), 16).unwrap(), &key);
     assert_ok(code, &body);
     assert_eq!(body["model"], "claude-haiku-4-5-20251001");
 }
@@ -156,7 +167,7 @@ fn live_ok_haiku_4_5_legacy_thinking() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think, then reply: ok");
     let model = Model::haiku_4_5().with_thinking(1024);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 1536), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 1536).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -183,7 +194,7 @@ fn live_ok_prompt_cache_creation() {
         .expect("anchor system cache");
     let mut ctx = ctx;
     ctx.push_user_text("Reply: ok");
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16).unwrap(), &key);
     assert_ok(code, &body);
     let created = body["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     let read = body["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -260,9 +271,10 @@ fn live_400_haiku_effort() {
 
 #[test]
 fn live_400_haiku_budget_ge_max() {
-    // budget_tokens must be < max_tokens. The crate CANNOT prevent this: thinking
-    // lives on the model type, max_tokens on Request (CLAUDE.md §4 split). This
-    // test pins the gap — a caller can build a 400 the type system won't catch.
+    // budget_tokens must be < max_tokens. `Request::new` now rejects this combo
+    // up front (RequestError::ThinkingBudgetExceedsMaxTokens — see the offline
+    // test), so the crate can't emit it; this raw request documents the
+    // underlying API rule that motivates that check.
     let key = key_or_skip!();
     let body = json!({
         "model": "claude-haiku-4-5", "max_tokens": 1000,
