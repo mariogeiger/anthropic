@@ -1,8 +1,8 @@
 //! Per-call request params and serialization to the `/v1/messages` body.
 //!
 //! Each `Model` variant carries only the parameters its underlying model accepts —
-//! unrepresentable combinations cannot be constructed. Only the latest model in
-//! each tier is supported: Opus 4.8, Sonnet 4.6, Haiku 4.5.
+//! unrepresentable combinations cannot be constructed. The latest model in each
+//! tier is supported: the Fable 5 frontier tier, plus Opus 4.8, Sonnet 4.6, Haiku 4.5.
 
 #![allow(non_camel_case_types)]
 
@@ -67,6 +67,7 @@ impl Default for Temperature {
 /// field is meaningful (e.g. `CountRequest`, which ignores sampling/thinking).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelId {
+    Fable5,
     Opus4_8,
     Sonnet4_6,
     Haiku4_5,
@@ -76,6 +77,7 @@ impl ModelId {
     /// The `model` field value sent on the wire.
     pub fn api_id(self) -> &'static str {
         match self {
+            ModelId::Fable5 => "claude-fable-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
             ModelId::Haiku4_5 => "claude-haiku-4-5",
@@ -85,6 +87,7 @@ impl ModelId {
 
 /// A Claude model plus its per-call parameters.
 pub enum Model {
+    Fable5(Fable5),
     Opus4_8(Opus4_8),
     Sonnet4_6(Sonnet4_6),
     Haiku4_5(Haiku4_5),
@@ -94,6 +97,7 @@ impl Model {
     /// Identity without per-call parameters.
     pub fn id(&self) -> ModelId {
         match self {
+            Model::Fable5(_) => ModelId::Fable5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
             Model::Haiku4_5(_) => ModelId::Haiku4_5,
@@ -107,6 +111,9 @@ impl Model {
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
+    pub fn fable_5() -> Fable5 {
+        Fable5::default()
+    }
     pub fn opus_4_8() -> Opus4_8 {
         Opus4_8::default()
     }
@@ -118,6 +125,11 @@ impl Model {
     }
 }
 
+impl From<Fable5> for Model {
+    fn from(p: Fable5) -> Self {
+        Model::Fable5(p)
+    }
+}
 impl From<Opus4_8> for Model {
     fn from(p: Opus4_8) -> Self {
         Model::Opus4_8(p)
@@ -133,6 +145,47 @@ impl From<Haiku4_5> for Model {
         Model::Haiku4_5(p)
     }
 }
+
+// ── Fable 5 ──────────────────────────────────────────────────────────────────
+// Frontier tier. No sampling (temperature/top_p/top_k rejected). Thinking is
+// always on: `{type: "disabled"}` and legacy `{type: "enabled", budget_tokens}`
+// both 400, so unlike Opus 4.8 there is no "off" state — the only knob is
+// `display`. Depth is controlled by `output_config.effort` (low..=max, incl.
+// xhigh). `display` defaults to `Omitted` (blocks stream, text empty).
+
+pub struct Fable5 {
+    pub display: ThinkingDisplay,
+    pub effort: Fable5Effort,
+}
+
+impl Default for Fable5 {
+    fn default() -> Self {
+        Self { display: ThinkingDisplay::Omitted, effort: Fable5Effort::High }
+    }
+}
+
+impl Fable5 {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_effort(mut self, effort: Fable5Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Set the thinking summary visibility. Thinking can't be turned off on
+    /// Fable 5; pass `Summarized` for visible reasoning text, `Omitted` (default)
+    /// for empty thinking blocks.
+    pub fn with_display(mut self, display: ThinkingDisplay) -> Self {
+        self.display = display;
+        self
+    }
+}
+
+// Same range as Opus-tier (`xhigh` is Opus 4.7+/Fable; Sonnet rejects it).
+api_enum! { Fable5Effort {
+    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
+}}
 
 // ── Opus 4.8 ─────────────────────────────────────────────────────────────────
 // No sampling (temperature/top_p/top_k rejected). Adaptive thinking only;
@@ -408,6 +461,9 @@ impl Serialize for Request<'_> {
         };
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
+            // Thinking is always on — always emit the adaptive block (§5: the
+            // request is a complete record of what the model sees).
+            Model::Fable5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
             Model::Opus4_8(p) => (
                 None,
                 match &p.thinking {
@@ -482,6 +538,40 @@ mod tests {
     fn approx(v: &Value, expected: f64) {
         let got = v.as_f64().expect("not a number");
         assert!((got - expected).abs() < 1e-4, "expected ~{expected}, got {got}");
+    }
+
+    #[test]
+    fn fable_5_default() {
+        let v = req(Model::fable_5());
+        assert_eq!(v["model"], "claude-fable-5");
+        assert!(v.get("temperature").is_none(), "temperature must not be sent on Fable 5");
+        // Thinking is always on — the adaptive block is always present, with the
+        // default `omitted` display. There is no "off" state.
+        assert_eq!(v["thinking"]["type"], "adaptive");
+        assert_eq!(v["thinking"]["display"], "omitted");
+        assert_eq!(v["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn fable_5_summarized_and_xhigh() {
+        let v = req(Model::fable_5().with_display(ThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh));
+        assert_eq!(v["thinking"]["type"], "adaptive");
+        assert_eq!(v["thinking"]["display"], "summarized");
+        assert_eq!(v["output_config"]["effort"], "xhigh");
+        assert!(v.get("temperature").is_none());
+    }
+
+    #[test]
+    fn fable_5_max_effort() {
+        assert_eq!(req(Model::fable_5().with_effort(Fable5Effort::Max))["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn fable_5_model_id() {
+        let m: Model = Model::fable_5().into();
+        assert_eq!(m.id(), ModelId::Fable5);
+        assert_eq!(m.api_id(), "claude-fable-5");
+        assert_eq!(ModelId::Fable5.api_id(), "claude-fable-5");
     }
 
     #[test]

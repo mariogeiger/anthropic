@@ -14,11 +14,14 @@
 //!                    400 at the API, documenting why the type system forbids it
 //!                    (CLAUDE.md §2). These post raw JSON the crate can't emit.
 //!
-//! Every result below was observed live on 2026-05-29.
+//! Every result below was observed live on 2026-05-29, except the Fable 5 cases
+//! (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
+//! on the test org, so those tests skipped rather than exercising 200/400. They
+//! assert the documented behavior for orgs that do have access.
 
 use anthropic::context::{CacheSlot, Context};
 use anthropic::request::{
-    CountRequest, Model, ModelId, Opus4_8Effort, Request, Sonnet4_6Effort, Temperature,
+    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Request, Sonnet4_6Effort, Temperature,
 };
 use anthropic::{CacheTtl, MESSAGES_PATH, ThinkingDisplay};
 use serde_json::{Value, json};
@@ -105,6 +108,19 @@ fn user_ctx(text: &str) -> Context {
     c
 }
 
+/// Fable 5 is access-gated at the org level. Where it isn't provisioned the API
+/// answers every Fable 5 request — valid or not — with `404 not_found_error`
+/// ("not available"), which would mask the 200/400 a Fable 5 test means to
+/// check. Treat that as a skip, the same way a missing `.key` is, so the suite
+/// stays green on orgs without access.
+fn fable5_unavailable(code: u16, body: &Value) -> bool {
+    if code == 404 && body["error"]["type"] == "not_found_error" {
+        eprintln!("[skip] {}: Claude Fable 5 not available on this org", function_name());
+        return true;
+    }
+    false
+}
+
 // ── Positive: bodies the crate produces are accepted ──────────────────────────
 
 #[test]
@@ -126,6 +142,34 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
         .with_adaptive_thinking(ThinkingDisplay::Summarized)
         .with_effort(Opus4_8Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_fable_5_default() {
+    // The crate's default Fable 5 body: always-on adaptive thinking (omitted
+    // display), effort high, no sampling. Accepted (200) on orgs with access.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply with the single word: ok");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::fable_5(), 16).unwrap(), &key);
+    if fable5_unavailable(code, &body) {
+        return;
+    }
+    assert_ok(code, &body);
+    assert_eq!(body["model"], "claude-fable-5");
+}
+
+#[test]
+fn live_ok_fable_5_summarized_xhigh() {
+    // `xhigh` + summarized thinking — exercises `Fable5Effort::Xhigh` and the
+    // visible-reasoning display.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Think briefly, then reply: ok");
+    let model = Model::fable_5().with_display(ThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    if fable5_unavailable(code, &body) {
+        return;
+    }
     assert_ok(code, &body);
 }
 
@@ -226,6 +270,39 @@ fn live_400_opus_legacy_thinking() {
         "thinking": {"type": "enabled", "budget_tokens": 1024},
     });
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_fable_5_disabled_thinking() {
+    // Fable 5 has no thinking-off state: `{type:"disabled"}` 400s — why `Fable5`
+    // always emits adaptive thinking and exposes only `display` (no off variant,
+    // unlike `Opus4_8Thinking::Off`).
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-fable-5", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "disabled"},
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    if fable5_unavailable(code, &resp) {
+        return;
+    }
+    assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_fable_5_temperature() {
+    // Fable 5 rejects sampling params (like Opus) — why `Fable5` carries no temperature.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-fable-5", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5,
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    if fable5_unavailable(code, &resp) {
+        return;
+    }
     assert_400(code, &resp);
 }
 

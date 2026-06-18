@@ -50,6 +50,7 @@ api_enum! { roundtrip StopReason {
     ToolUse => "tool_use",
     PauseTurn => "pause_turn",
     Refusal => "refusal",
+    ModelContextWindowExceeded => "model_context_window_exceeded",
 }}
 
 api_enum! { roundtrip ErrorType {
@@ -88,3 +89,58 @@ impl ErrorType {
 api_enum! { CacheControlType { Ephemeral => "ephemeral" } }
 
 api_enum! { CacheTtl { FiveMinutes => "5m", OneHour => "1h" } }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `from_str` is the documented inverse of `as_str` (§6): every wire string
+    /// must round-trip, and unknown strings must return `None`.
+    #[test]
+    fn stop_reason_roundtrips() {
+        for r in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::StopSequence,
+            StopReason::ToolUse,
+            StopReason::PauseTurn,
+            StopReason::Refusal,
+            StopReason::ModelContextWindowExceeded,
+        ] {
+            assert_eq!(StopReason::from_str(r.as_str()), Some(r));
+        }
+        // The variant added for Sonnet 4.5+ / Opus 4.5+ / Haiku 4.5 — the tiers
+        // this crate models all emit it by default.
+        assert_eq!(StopReason::from_str("model_context_window_exceeded"), Some(StopReason::ModelContextWindowExceeded));
+        assert_eq!(StopReason::from_str("not_a_stop_reason"), None);
+    }
+
+    #[test]
+    fn error_type_roundtrips() {
+        for e in [
+            ErrorType::InvalidRequest,
+            ErrorType::Authentication,
+            ErrorType::Billing,
+            ErrorType::Permission,
+            ErrorType::NotFound,
+            ErrorType::RequestTooLarge,
+            ErrorType::RateLimit,
+            ErrorType::Api,
+            ErrorType::Timeout,
+            ErrorType::Overloaded,
+        ] {
+            assert_eq!(ErrorType::from_str(e.as_str()), Some(e));
+        }
+        assert_eq!(ErrorType::from_str("nonsense"), None);
+    }
+
+    #[test]
+    fn error_type_from_status() {
+        assert_eq!(ErrorType::from_status(400), Some(ErrorType::InvalidRequest));
+        assert_eq!(ErrorType::from_status(402), Some(ErrorType::Billing));
+        assert_eq!(ErrorType::from_status(403), Some(ErrorType::Permission));
+        assert_eq!(ErrorType::from_status(504), Some(ErrorType::Timeout));
+        assert_eq!(ErrorType::from_status(529), Some(ErrorType::Overloaded));
+        assert_eq!(ErrorType::from_status(418), None);
+    }
+}
