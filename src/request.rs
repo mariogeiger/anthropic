@@ -2,7 +2,8 @@
 //!
 //! Each `Model` variant carries only the parameters its underlying model accepts —
 //! unrepresentable combinations cannot be constructed. The latest model in each
-//! tier is supported: the Fable 5 frontier tier, plus Opus 4.8, Sonnet 4.6, Haiku 4.5.
+//! tier is supported: the Fable 5 frontier tier, plus Opus 4.8, Sonnet 5, Haiku 4.5.
+//! Sonnet 4.6 is kept as the prior Sonnet tier (still an active model).
 
 #![allow(non_camel_case_types)]
 
@@ -69,6 +70,7 @@ impl Default for Temperature {
 pub enum ModelId {
     Fable5,
     Opus4_8,
+    Sonnet5,
     Sonnet4_6,
     Haiku4_5,
 }
@@ -79,8 +81,25 @@ impl ModelId {
         match self {
             ModelId::Fable5 => "claude-fable-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
+            ModelId::Sonnet5 => "claude-sonnet-5",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
             ModelId::Haiku4_5 => "claude-haiku-4-5",
+        }
+    }
+
+    /// Minimum prefix length, in tokens, that this model will cache. A cached
+    /// prefix shorter than this is a *silent* no-op — the API caches nothing and
+    /// returns no error (detectable only via `usage.cache_read_input_tokens`), so
+    /// this is documented behavior, not a request-validity rule the type system
+    /// can enforce. Values per the Anthropic prompt-caching docs (first-party API;
+    /// some platforms differ — e.g. Fable 5 is 1024 on Amazon Bedrock).
+    pub fn min_cacheable_prefix_tokens(self) -> u32 {
+        match self {
+            ModelId::Fable5 => 512,
+            ModelId::Opus4_8 => 1_024,
+            ModelId::Sonnet5 => 1_024,
+            ModelId::Sonnet4_6 => 1_024,
+            ModelId::Haiku4_5 => 4_096,
         }
     }
 }
@@ -89,6 +108,7 @@ impl ModelId {
 pub enum Model {
     Fable5(Fable5),
     Opus4_8(Opus4_8),
+    Sonnet5(Sonnet5),
     Sonnet4_6(Sonnet4_6),
     Haiku4_5(Haiku4_5),
 }
@@ -99,6 +119,7 @@ impl Model {
         match self {
             Model::Fable5(_) => ModelId::Fable5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
+            Model::Sonnet5(_) => ModelId::Sonnet5,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
             Model::Haiku4_5(_) => ModelId::Haiku4_5,
         }
@@ -109,6 +130,12 @@ impl Model {
         self.id().api_id()
     }
 
+    /// Minimum cacheable prefix length, in tokens
+    /// (see [`ModelId::min_cacheable_prefix_tokens`]).
+    pub fn min_cacheable_prefix_tokens(&self) -> u32 {
+        self.id().min_cacheable_prefix_tokens()
+    }
+
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
     pub fn fable_5() -> Fable5 {
@@ -116,6 +143,9 @@ impl Model {
     }
     pub fn opus_4_8() -> Opus4_8 {
         Opus4_8::default()
+    }
+    pub fn sonnet_5() -> Sonnet5 {
+        Sonnet5::default()
     }
     pub fn sonnet_4_6() -> Sonnet4_6 {
         Sonnet4_6::default()
@@ -133,6 +163,11 @@ impl From<Fable5> for Model {
 impl From<Opus4_8> for Model {
     fn from(p: Opus4_8) -> Self {
         Model::Opus4_8(p)
+    }
+}
+impl From<Sonnet5> for Model {
+    fn from(p: Sonnet5) -> Self {
+        Model::Sonnet5(p)
     }
 }
 impl From<Sonnet4_6> for Model {
@@ -234,6 +269,65 @@ pub enum Opus4_8Thinking {
 
 // `Xhigh` is Opus-tier only (Opus 4.7 and later); Sonnet 4.6 rejects it (400).
 api_enum! { Opus4_8Effort {
+    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
+}}
+
+// ── Sonnet 5 ─────────────────────────────────────────────────────────────────
+// Current Sonnet tier. No sampling (temperature/top_p/top_k non-default rejected,
+// like Opus 4.8). Adaptive thinking is *on by default*: omitting `thinking` leaves
+// it on, so "off" has to be sent explicitly as `{type: "disabled"}` — unlike Opus
+// 4.8, whose off state is simply the omitted field. Legacy `{type: "enabled",
+// budget_tokens}` is removed (400). Full Opus-tier effort incl. `xhigh` (Sonnet 4.6
+// rejects `xhigh`). New tokenizer (~30% more tokens than Sonnet 4.6) — no wire effect.
+
+pub struct Sonnet5 {
+    pub thinking: Sonnet5Thinking,
+    pub effort: Sonnet5Effort,
+}
+
+impl Default for Sonnet5 {
+    /// Adaptive thinking on with `Omitted` display — the runtime default the API
+    /// applies when `thinking` is absent, emitted explicitly (§5).
+    fn default() -> Self {
+        Self { thinking: Sonnet5Thinking::Adaptive { display: ThinkingDisplay::Omitted }, effort: Sonnet5Effort::High }
+    }
+}
+
+impl Sonnet5 {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_effort(mut self, effort: Sonnet5Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Set adaptive thinking's summary visibility. `display` defaults to `Omitted`
+    /// (blocks stream but text is empty); pass `Summarized` for visible text.
+    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
+        self.thinking = Sonnet5Thinking::Adaptive { display };
+        self
+    }
+
+    /// Turn thinking off. Emits `{type: "disabled"}` explicitly: on Sonnet 5 an
+    /// omitted `thinking` field leaves adaptive thinking on, so off must be stated.
+    pub fn with_thinking_off(mut self) -> Self {
+        self.thinking = Sonnet5Thinking::Disabled;
+        self
+    }
+}
+
+pub enum Sonnet5Thinking {
+    Adaptive {
+        display: ThinkingDisplay,
+    },
+    /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
+    /// Sonnet 5 means adaptive thinking on.
+    Disabled,
+}
+
+// Full Opus-tier range: `xhigh` is accepted on Sonnet 5 (Sonnet 4.6 rejects it).
+api_enum! { Sonnet5Effort {
     Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
 }}
 
@@ -422,10 +516,17 @@ struct EnabledThinking {
 }
 
 #[derive(Serialize)]
+struct DisabledThinking {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+#[derive(Serialize)]
 #[serde(untagged)]
 enum ThinkingWire {
     Adaptive(AdaptiveThinking),
     Enabled(EnabledThinking),
+    Disabled(DisabledThinking),
 }
 
 #[derive(Serialize)]
@@ -470,6 +571,18 @@ impl Serialize for Request<'_> {
                     Opus4_8Thinking::Off => None,
                     Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
                 },
+                effort(p.effort.as_str()),
+            ),
+            // Adaptive thinking is always emitted explicitly; "off" is the explicit
+            // disabled block, not an omitted field (§5). No sampling.
+            Model::Sonnet5(p) => (
+                None,
+                Some(match &p.thinking {
+                    Sonnet5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
+                    Sonnet5Thinking::Disabled => {
+                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })
+                    }
+                }),
                 effort(p.effort.as_str()),
             ),
             Model::Sonnet4_6(p) => {
@@ -602,6 +715,61 @@ mod tests {
     }
 
     #[test]
+    fn sonnet_5_default() {
+        let v = req(Model::sonnet_5());
+        assert_eq!(v["model"], "claude-sonnet-5");
+        assert!(v.get("temperature").is_none(), "temperature must not be sent on Sonnet 5");
+        // Adaptive thinking is on by default and emitted explicitly (omitting the
+        // field would also mean on, but §5 keeps the body a complete record).
+        assert_eq!(v["thinking"]["type"], "adaptive");
+        assert_eq!(v["thinking"]["display"], "omitted");
+        assert_eq!(v["output_config"]["effort"], "high");
+    }
+
+    #[test]
+    fn sonnet_5_adaptive_summarized_xhigh() {
+        // `xhigh` is accepted on Sonnet 5 (unlike Sonnet 4.6).
+        let v = req(Model::sonnet_5()
+            .with_adaptive_thinking(ThinkingDisplay::Summarized)
+            .with_effort(Sonnet5Effort::Xhigh));
+        assert_eq!(v["thinking"]["type"], "adaptive");
+        assert_eq!(v["thinking"]["display"], "summarized");
+        assert_eq!(v["output_config"]["effort"], "xhigh");
+        assert!(v.get("temperature").is_none());
+    }
+
+    #[test]
+    fn sonnet_5_thinking_off_is_explicit_disabled() {
+        // "off" is the explicit disabled block — not an omitted field, which on
+        // Sonnet 5 would leave adaptive thinking on.
+        let v = req(Model::sonnet_5().with_thinking_off().with_effort(Sonnet5Effort::Max));
+        assert_eq!(v["thinking"]["type"], "disabled");
+        assert!(v["thinking"].get("display").is_none(), "disabled carries no display");
+        assert!(v.get("temperature").is_none());
+        assert_eq!(v["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn sonnet_5_model_id() {
+        let m: Model = Model::sonnet_5().with_thinking_off().into();
+        assert_eq!(m.id(), ModelId::Sonnet5);
+        assert_eq!(m.api_id(), "claude-sonnet-5");
+        assert_eq!(ModelId::Sonnet5.api_id(), "claude-sonnet-5");
+    }
+
+    #[test]
+    fn min_cacheable_prefix_tokens() {
+        assert_eq!(ModelId::Fable5.min_cacheable_prefix_tokens(), 512);
+        assert_eq!(ModelId::Opus4_8.min_cacheable_prefix_tokens(), 1_024);
+        assert_eq!(ModelId::Sonnet5.min_cacheable_prefix_tokens(), 1_024);
+        assert_eq!(ModelId::Sonnet4_6.min_cacheable_prefix_tokens(), 1_024);
+        assert_eq!(ModelId::Haiku4_5.min_cacheable_prefix_tokens(), 4_096);
+        // `Model` delegates to its identity.
+        let m: Model = Model::sonnet_5().into();
+        assert_eq!(m.min_cacheable_prefix_tokens(), 1_024);
+    }
+
+    #[test]
     fn sonnet_4_6_default_uses_temperature() {
         let v = req(Model::sonnet_4_6());
         assert_eq!(v["model"], "claude-sonnet-4-6");
@@ -659,7 +827,8 @@ mod tests {
     fn haiku_4_5_legacy_thinking() {
         // budget_tokens must stay below max_tokens (validated by `Request::new`).
         let ctx = Context::new();
-        let v = serde_json::to_value(Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1536).unwrap()).unwrap();
+        let v =
+            serde_json::to_value(Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1536).unwrap()).unwrap();
         assert_eq!(v["thinking"]["type"], "enabled");
         assert_eq!(v["thinking"]["budget_tokens"], 1024);
         assert!(v["thinking"].get("display").is_none(), "`display` is adaptive-only");

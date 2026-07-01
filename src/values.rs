@@ -36,9 +36,11 @@ api_enum! { ImageMediaType {
     Jpeg => "image/jpeg", Png => "image/png", Gif => "image/gif", Webp => "image/webp",
 }}
 
-// `thinking.type`. `Enabled` is the legacy fixed-budget form (deprecated on Sonnet 4.6,
-// removed on Opus 4.7+); `Adaptive` is the only form currently emitted by `Request`.
-api_enum! { ThinkingType { Enabled => "enabled", Adaptive => "adaptive" } }
+// `thinking.type`. `Enabled` is the legacy fixed-budget form: emitted for Haiku 4.5,
+// removed on Opus 4.7+ / Sonnet 5 (deprecated on Sonnet 4.6). `Adaptive` is emitted for
+// Fable 5, Opus 4.8, and Sonnet 5. `Disabled` is the explicit thinking-off form emitted
+// for Sonnet 5, where an omitted `thinking` field would instead leave adaptive on.
+api_enum! { ThinkingType { Enabled => "enabled", Adaptive => "adaptive", Disabled => "disabled" } }
 
 // Opus 4.7+ `thinking.display`. Default `Omitted` = thinking streams but text is empty.
 api_enum! { ThinkingDisplay { Summarized => "summarized", Omitted => "omitted" } }
