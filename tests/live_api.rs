@@ -17,11 +17,13 @@
 //! Every result below was observed live on 2026-05-29, except the Fable 5 cases
 //! (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
 //! on the test org, so those tests skipped rather than exercising 200/400. They
-//! assert the documented behavior for orgs that do have access.
+//! assert the documented behavior for orgs that do have access. The Sonnet 5 cases
+//! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
+//! customers, so they exercise 200/400 on any org with a `.key`.
 
 use anthropic::context::{CacheSlot, Context};
 use anthropic::request::{
-    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Request, Sonnet4_6Effort, Temperature,
+    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
 use anthropic::{CacheTtl, MESSAGES_PATH, ThinkingDisplay};
 use serde_json::{Value, json};
@@ -138,9 +140,7 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
     // Opus — the crate is right to expose `Opus4_8Effort::Xhigh`.
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
-    let model = Model::opus_4_8()
-        .with_adaptive_thinking(ThinkingDisplay::Summarized)
-        .with_effort(Opus4_8Effort::Xhigh);
+    let model = Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Opus4_8Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
     assert_ok(code, &body);
 }
@@ -196,6 +196,54 @@ fn live_ok_sonnet_4_6_adaptive_max_effort() {
 }
 
 #[test]
+fn live_ok_sonnet_5_default() {
+    // The crate's default Sonnet 5 body: adaptive thinking on (omitted display),
+    // effort high, no sampling.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply with the single word: ok");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code, &body);
+    assert_eq!(body["model"], "claude-sonnet-5");
+}
+
+#[test]
+fn live_ok_sonnet_5_thinking_off() {
+    // Sonnet 5 *does* have a thinking-off state, reached via `{type:"disabled"}`
+    // (contrast Fable 5, where disabled 400s). Confirms `Sonnet5Thinking::Disabled`
+    // is accepted.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply with the single word: ok");
+    let (code, body) =
+        post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5().with_thinking_off(), 16).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_sonnet_5_xhigh() {
+    // `xhigh` is accepted on Sonnet 5 — why `Sonnet5Effort` (unlike `Sonnet4_6Effort`)
+    // exposes `Xhigh`.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Think briefly, then reply: ok");
+    let model = Model::sonnet_5().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Sonnet5Effort::Xhigh);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_sonnet_5_stop_sequence() {
+    // The crate's `stop_sequences` is honored on Sonnet 5: generation halts at the
+    // sequence and the response reports `stop_reason: "stop_sequence"`. Thinking is
+    // off so output is plain text and the sequence is hit deterministically.
+    let key = key_or_skip!();
+    let ctx = user_ctx("List the numbers 1 through 9 separated by single spaces, nothing else.");
+    let model = Model::sonnet_5().with_thinking_off();
+    let req = Request::new(&ctx, model, 64).unwrap().stop_sequences(vec!["5".into()]);
+    let (code, body) = post(MESSAGES_PATH, &req, &key);
+    assert_ok(code, &body);
+    assert_eq!(body["stop_reason"], "stop_sequence", "body: {body}");
+}
+
+#[test]
 fn live_ok_haiku_4_5_temperature() {
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
@@ -227,15 +275,35 @@ fn live_ok_count_tokens() {
 }
 
 #[test]
-fn live_ok_prompt_cache_creation() {
-    // A cached system prompt over the 4096-token Opus minimum: confirms the
-    // crate's `SystemPrompt` block-array wire shape + `cache_control` actually
-    // engage caching (usage reports cached tokens).
+fn live_ok_count_tokens_sonnet_5_new_tokenizer() {
+    // `ModelId::Sonnet5` resolves at the count endpoint, and confirms Sonnet 5 is a
+    // genuinely distinct model, not a 4.6 alias: its new tokenizer yields more tokens
+    // than Sonnet 4.6 for the same text (~30% more, per the launch docs).
     let key = key_or_skip!();
-    let big = "The quick brown fox jumps over the lazy dog. ".repeat(700); // ~7k tokens
-    let ctx = Context::new()
-        .with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes)
-        .expect("anchor system cache");
+    let mut ctx = Context::new();
+    ctx.push_user_text(
+        "Tokenizers segment text into subword units; the same passage can map to \
+         different token counts across model generations, which changes both cost \
+         and how much text fits inside a fixed context window.",
+    );
+    let (c5, b5) = post(anthropic::COUNT_TOKENS_PATH, &CountRequest::new(&ctx, ModelId::Sonnet5), &key);
+    assert_ok(c5, &b5);
+    let (c46, b46) = post(anthropic::COUNT_TOKENS_PATH, &CountRequest::new(&ctx, ModelId::Sonnet4_6), &key);
+    assert_ok(c46, &b46);
+    let n5 = b5["input_tokens"].as_u64().unwrap_or(0);
+    let n46 = b46["input_tokens"].as_u64().unwrap_or(0);
+    assert!(n46 > 0 && n5 > n46, "expected Sonnet 5 to count more tokens than Sonnet 4.6, got s5={n5} s46={n46}");
+}
+
+#[test]
+fn live_ok_prompt_cache_creation() {
+    // A cached system prompt well over Opus 4.8's 1,024-token cache minimum:
+    // confirms the crate's `SystemPrompt` block-array wire shape + `cache_control`
+    // actually engage caching (usage reports cached tokens).
+    let key = key_or_skip!();
+    let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
+    let ctx =
+        Context::new().with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes).expect("anchor system cache");
     let mut ctx = ctx;
     ctx.push_user_text("Reply: ok");
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16).unwrap(), &key);
@@ -243,6 +311,77 @@ fn live_ok_prompt_cache_creation() {
     let created = body["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     let read = body["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
     assert!(created + read > 0, "expected cache activity, usage: {}", body["usage"]);
+}
+
+#[test]
+fn live_ok_prompt_cache_read() {
+    // §1's core promise plus the minimum-length boundary, end-to-end on Sonnet 5:
+    //  * a prefix *over* the model's minimum is written on the 1st request and
+    //    *re-read* on a 2nd identical-prefix request (cache_read_input_tokens > 0);
+    //  * a prefix *below* `ModelId::min_cacheable_prefix_tokens` is a silent no-op —
+    //    still marked with cache_control, yet nothing is written or read, and no 400.
+    // The same `Context` is reused verbatim per case, so prefix bytes are identical
+    // by construction; reads are live within the TTL.
+    let key = key_or_skip!();
+    let min = ModelId::Sonnet5.min_cacheable_prefix_tokens();
+
+    // Over the minimum: caches on write, reads on the 2nd identical request.
+    let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
+    let mut ctx =
+        Context::new().with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes).expect("anchor system cache");
+    ctx.push_user_text("Reply: ok");
+    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code1, &body1);
+    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code2, &body2);
+    let read = body2["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    assert!(read > 0, "expected a cache read on the 2nd identical-prefix request, usage: {}", body2["usage"]);
+
+    // Below the minimum: cache_control is set, but the API silently declines to
+    // cache — no creation, no read, no error.
+    let small = "Be concise.";
+    let mut ctx =
+        Context::new().with_system_cached(CacheSlot::S0, small, CacheTtl::FiveMinutes).expect("anchor system cache");
+    ctx.push_user_text("Reply: ok");
+    // The whole-request token count is an upper bound on the cached prefix, so
+    // count < min proves the prefix is genuinely below the threshold.
+    let (ccode, cbody) = post(anthropic::COUNT_TOKENS_PATH, &CountRequest::new(&ctx, ModelId::Sonnet5), &key);
+    assert_ok(ccode, &cbody);
+    let count = cbody["input_tokens"].as_u64().unwrap_or(u64::MAX);
+    assert!(count < u64::from(min), "test prefix must be below the {min}-token minimum, was {count}");
+    let (code3, body3) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code3, &body3);
+    let created = body3["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+    let read = body3["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    assert_eq!(created + read, 0, "a sub-minimum prefix must not cache, usage: {}", body3["usage"]);
+}
+
+#[test]
+fn live_ok_sonnet_5_roll_cache_across_turns() {
+    // `roll_cache` is the crate's append-only cache evolution (§1): move a rolling
+    // breakpoint to the conversation tail each turn so the growing prefix is
+    // re-read, not rebuilt. No system anchor here — the breakpoint lives purely on
+    // message content, so the 2nd turn's cache_read is attributable to the roll.
+    let key = key_or_skip!();
+    let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
+
+    // Turn 1: a large user message, breakpoint rolled to its tail.
+    let mut ctx = Context::new();
+    ctx.push_user_text(big);
+    ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).expect("roll to turn-1 tail");
+    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code1, &body1);
+
+    // Turn 2: extend the conversation, then roll the breakpoint forward. The crate
+    // clears the old position's cache_control and sets it on the new tail; the
+    // turn-1 prefix cached above must now come back as a read.
+    ctx.push_assistant_text("ok");
+    ctx.push_user_text("Reply with the single word: ok");
+    ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).expect("roll to turn-2 tail");
+    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    assert_ok(code2, &body2);
+    let read = body2["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
+    assert!(read > 0, "rolled prefix should be re-read on the 2nd turn, usage: {}", body2["usage"]);
 }
 
 // ── Negative: combos the crate forbids really do 400 (CLAUDE.md §2) ────────────
@@ -308,7 +447,8 @@ fn live_400_fable_5_temperature() {
 
 #[test]
 fn live_400_sonnet_xhigh() {
-    // `xhigh` is Opus-only — why `Sonnet4_6Effort` has no `Xhigh`.
+    // `xhigh` is rejected on Sonnet 4.6 — why `Sonnet4_6Effort` has no `Xhigh`.
+    // (Sonnet 5 accepts it; see `live_ok_sonnet_5_xhigh`.)
     let key = key_or_skip!();
     let body = json!({
         "model": "claude-sonnet-4-6", "max_tokens": 16,
@@ -318,6 +458,33 @@ fn live_400_sonnet_xhigh() {
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
     let m = assert_400(code, &resp);
     assert!(m.contains("xhigh"), "unexpected message: {m}");
+}
+
+#[test]
+fn live_400_sonnet_5_temperature() {
+    // Sonnet 5 rejects non-default sampling params (new for the Sonnet tier) —
+    // why `Sonnet5` carries no temperature.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-sonnet-5", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5,
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_sonnet_5_legacy_thinking() {
+    // Sonnet 5 rejects legacy `{type:"enabled",budget_tokens}` (removed, as on
+    // Opus 4.8) — why `Sonnet5Thinking` is Adaptive|Disabled with no legacy variant.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-sonnet-5", "max_tokens": 2048,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 1024},
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
 }
 
 #[test]
@@ -357,6 +524,26 @@ fn live_400_haiku_budget_ge_max() {
         "model": "claude-haiku-4-5", "max_tokens": 1000,
         "messages": [{"role": "user", "content": "hi"}],
         "thinking": {"type": "enabled", "budget_tokens": 2000},
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_five_cache_breakpoints() {
+    // The API caps `cache_control` breakpoints at 4 — which is exactly why
+    // `CacheSlot` is S0..S3 and the crate cannot place a 5th. Raw JSON with 5
+    // breakpoints (1 system + 4 message blocks) 400s.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-opus-4-8", "max_tokens": 16,
+        "system": [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}],
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "c", "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": "d", "cache_control": {"type": "ephemeral"}},
+        ]}],
     });
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
     assert_400(code, &resp);
