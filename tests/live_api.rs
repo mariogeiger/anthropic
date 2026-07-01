@@ -531,6 +531,20 @@ fn live_400_haiku_budget_ge_max() {
 }
 
 #[test]
+fn live_400_max_tokens_over_model_max() {
+    // max_tokens above the model's max output 400s — why `Request::new` rejects
+    // it (RequestError::MaxTokensOutOfRange) using `ModelId::max_output_tokens`.
+    // Opus 4.8 caps at 128k; the crate can't emit this, so post raw JSON.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-opus-4-8", "max_tokens": 200000,
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
+}
+
+#[test]
 fn live_400_five_cache_breakpoints() {
     // The API caps `cache_control` breakpoints at 4 — which is exactly why
     // `CacheSlot` is S0..S3 and the crate cannot place a 5th. Raw JSON with 5

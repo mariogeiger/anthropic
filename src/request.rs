@@ -75,6 +75,23 @@ pub enum ModelId {
     Haiku4_5,
 }
 
+/// Standard list price per million tokens (MTok), in US cents (e.g. 500 = $5.00).
+/// Introductory/promotional pricing, batch and cache-tier rates, and per-platform
+/// pricing are not represented — verify against the Anthropic pricing docs before
+/// relying on this for billing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pricing {
+    pub input_cents_per_mtok: u32,
+    pub output_cents_per_mtok: u32,
+}
+
+/// A calendar month, used for documented model cutoff dates (no day granularity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct YearMonth {
+    pub year: u16,
+    pub month: u8,
+}
+
 impl ModelId {
     /// The `model` field value sent on the wire.
     pub fn api_id(self) -> &'static str {
@@ -101,6 +118,69 @@ impl ModelId {
             ModelId::Sonnet4_6 => 1_024,
             ModelId::Haiku4_5 => 4_096,
         }
+    }
+
+    /// Total context-window size in tokens. Input and output share this budget.
+    pub fn context_window_tokens(self) -> u32 {
+        match self {
+            ModelId::Fable5 => 1_000_000,
+            ModelId::Opus4_8 => 1_000_000,
+            ModelId::Sonnet5 => 1_000_000,
+            ModelId::Sonnet4_6 => 1_000_000,
+            ModelId::Haiku4_5 => 200_000,
+        }
+    }
+
+    /// Maximum output tokens in a single synchronous Messages API response.
+    /// `Request::new` rejects `max_tokens` outside `1..=max_output_tokens()`.
+    /// (The Message Batches API permits more on some models via a beta header,
+    /// which this crate does not model.)
+    pub fn max_output_tokens(self) -> u32 {
+        match self {
+            ModelId::Fable5 => 128_000,
+            ModelId::Opus4_8 => 128_000,
+            ModelId::Sonnet5 => 128_000,
+            ModelId::Sonnet4_6 => 128_000,
+            ModelId::Haiku4_5 => 64_000,
+        }
+    }
+
+    /// Reliable knowledge cutoff: the date through which the model's knowledge is
+    /// most extensive and reliable (per the Anthropic models docs).
+    pub fn knowledge_cutoff(self) -> YearMonth {
+        let (year, month) = match self {
+            ModelId::Fable5 => (2026, 1),
+            ModelId::Opus4_8 => (2026, 1),
+            ModelId::Sonnet5 => (2026, 1),
+            ModelId::Sonnet4_6 => (2025, 8),
+            ModelId::Haiku4_5 => (2025, 2),
+        };
+        YearMonth { year, month }
+    }
+
+    /// Training data cutoff: the broader end of the training-data date range.
+    pub fn training_cutoff(self) -> YearMonth {
+        let (year, month) = match self {
+            ModelId::Fable5 => (2026, 1),
+            ModelId::Opus4_8 => (2026, 1),
+            ModelId::Sonnet5 => (2026, 1),
+            ModelId::Sonnet4_6 => (2026, 1),
+            ModelId::Haiku4_5 => (2025, 7),
+        };
+        YearMonth { year, month }
+    }
+
+    /// Standard list price per MTok (see [`Pricing`] for caveats).
+    pub fn price_per_mtok(self) -> Pricing {
+        let (input, output) = match self {
+            ModelId::Fable5 => (1_000, 5_000),
+            ModelId::Opus4_8 => (500, 2_500),
+            // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
+            ModelId::Sonnet5 => (300, 1_500),
+            ModelId::Sonnet4_6 => (300, 1_500),
+            ModelId::Haiku4_5 => (100, 500),
+        };
+        Pricing { input_cents_per_mtok: input, output_cents_per_mtok: output }
     }
 }
 
@@ -436,6 +516,9 @@ pub enum RequestError {
     /// API rejects `budget_tokens >= max_tokens` with a 400. Only reachable on
     /// Haiku 4.5 via `with_thinking` — adaptive-thinking models carry no budget.
     ThinkingBudgetExceedsMaxTokens { budget_tokens: u32, max_tokens: u32 },
+    /// `max_tokens` must fall within `1..=ModelId::max_output_tokens()`. The API
+    /// rejects 0 and any value above the model's synchronous max output with a 400.
+    MaxTokensOutOfRange { max_tokens: u32, max_output: u32 },
 }
 
 impl std::fmt::Display for RequestError {
@@ -443,6 +526,9 @@ impl std::fmt::Display for RequestError {
         match self {
             RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens } => {
                 write!(f, "thinking budget_tokens ({budget_tokens}) must be less than max_tokens ({max_tokens})")
+            }
+            RequestError::MaxTokensOutOfRange { max_tokens, max_output } => {
+                write!(f, "max_tokens ({max_tokens}) must be in 1..={max_output} for this model")
             }
         }
     }
@@ -459,12 +545,16 @@ pub struct Request<'a> {
 }
 
 impl<'a> Request<'a> {
-    /// `new` is the single construction path, so the check can't be bypassed.
-    /// It validates the one invariant the type system can't (the model carries
-    /// `budget_tokens`, the request carries `max_tokens` — they only meet here):
-    /// legacy `budget_tokens` must be below `max_tokens`.
+    /// `new` is the single construction path, so the checks can't be bypassed.
+    /// It validates the invariants the type system can't express: `max_tokens`
+    /// must fall within `1..=` the model's max output, and legacy `budget_tokens`
+    /// (Haiku 4.5 only) must be below `max_tokens`.
     pub fn new(context: &'a Context, model: impl Into<Model>, max_tokens: u32) -> Result<Self, RequestError> {
         let model = model.into();
+        let max_output = model.id().max_output_tokens();
+        if max_tokens == 0 || max_tokens > max_output {
+            return Err(RequestError::MaxTokensOutOfRange { max_tokens, max_output });
+        }
         if let Model::Haiku4_5(h) = &model
             && let Haiku4_5Thinking::Enabled { budget_tokens } = h.thinking
             && budget_tokens >= max_tokens
@@ -767,6 +857,45 @@ mod tests {
         // `Model` delegates to its identity.
         let m: Model = Model::sonnet_5().into();
         assert_eq!(m.min_cacheable_prefix_tokens(), 1_024);
+    }
+
+    #[test]
+    fn model_constants() {
+        assert_eq!(ModelId::Opus4_8.context_window_tokens(), 1_000_000);
+        assert_eq!(ModelId::Haiku4_5.context_window_tokens(), 200_000);
+        assert_eq!(ModelId::Sonnet5.max_output_tokens(), 128_000);
+        assert_eq!(ModelId::Haiku4_5.max_output_tokens(), 64_000);
+        assert_eq!(ModelId::Sonnet5.knowledge_cutoff(), YearMonth { year: 2026, month: 1 });
+        assert_eq!(ModelId::Sonnet4_6.knowledge_cutoff(), YearMonth { year: 2025, month: 8 });
+        assert_eq!(ModelId::Sonnet4_6.training_cutoff(), YearMonth { year: 2026, month: 1 });
+        assert_eq!(ModelId::Haiku4_5.training_cutoff(), YearMonth { year: 2025, month: 7 });
+        assert_eq!(
+            ModelId::Opus4_8.price_per_mtok(),
+            Pricing { input_cents_per_mtok: 500, output_cents_per_mtok: 2_500 }
+        );
+        assert_eq!(
+            ModelId::Haiku4_5.price_per_mtok(),
+            Pricing { input_cents_per_mtok: 100, output_cents_per_mtok: 500 }
+        );
+    }
+
+    #[test]
+    fn max_tokens_must_be_in_range() {
+        let ctx = Context::new();
+        // Zero is rejected up front (the API requires >= 1).
+        assert_eq!(
+            Request::new(&ctx, Model::opus_4_8(), 0).err(),
+            Some(RequestError::MaxTokensOutOfRange { max_tokens: 0, max_output: 128_000 }),
+        );
+        // Above the model's max output is rejected (Haiku 4.5 caps at 64k)...
+        assert_eq!(
+            Request::new(&ctx, Model::haiku_4_5(), 64_001).err(),
+            Some(RequestError::MaxTokensOutOfRange { max_tokens: 64_001, max_output: 64_000 }),
+        );
+        // ...but 1 and exactly the max are fine.
+        assert!(Request::new(&ctx, Model::opus_4_8(), 1).is_ok());
+        assert!(Request::new(&ctx, Model::haiku_4_5(), 64_000).is_ok());
+        assert!(Request::new(&ctx, Model::opus_4_8(), 128_000).is_ok());
     }
 
     #[test]
