@@ -141,7 +141,7 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model = Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Opus4_8Effort::Xhigh);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -166,7 +166,7 @@ fn live_ok_fable_5_summarized_xhigh() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model = Model::fable_5().with_display(ThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     if fable5_unavailable(code, &body) {
         return;
     }
@@ -191,7 +191,7 @@ fn live_ok_sonnet_4_6_adaptive_max_effort() {
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model =
         Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Sonnet4_6Effort::Max);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -201,7 +201,7 @@ fn live_ok_sonnet_5_default() {
     // effort high, no sampling.
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code, &body);
     assert_eq!(body["model"], "claude-sonnet-5");
 }
@@ -225,7 +225,7 @@ fn live_ok_sonnet_5_xhigh() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model = Model::sonnet_5().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Sonnet5Effort::Xhigh);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -255,11 +255,12 @@ fn live_ok_haiku_4_5_temperature() {
 #[test]
 fn live_ok_haiku_4_5_legacy_thinking() {
     // Haiku 4.5 accepts legacy `{type:"enabled",budget_tokens}` (adaptive 400s);
-    // budget must be < max_tokens.
+    // budget must be < max_tokens. Budget stays at the 1024 API floor; max_tokens
+    // is just above it to cap the text tail (the thinking spend is the model's).
     let key = key_or_skip!();
-    let ctx = user_ctx("Think, then reply: ok");
+    let ctx = user_ctx("Reply: ok");
     let model = Model::haiku_4_5().with_thinking(1024);
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 1536).unwrap(), &key);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 1088).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -330,9 +331,9 @@ fn live_ok_prompt_cache_read() {
     let mut ctx =
         Context::new().with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes).expect("anchor system cache");
     ctx.push_user_text("Reply: ok");
-    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code1, &body1);
-    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code2, &body2);
     let read = body2["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
     assert!(read > 0, "expected a cache read on the 2nd identical-prefix request, usage: {}", body2["usage"]);
@@ -349,7 +350,7 @@ fn live_ok_prompt_cache_read() {
     assert_ok(ccode, &cbody);
     let count = cbody["input_tokens"].as_u64().unwrap_or(u64::MAX);
     assert!(count < u64::from(min), "test prefix must be below the {min}-token minimum, was {count}");
-    let (code3, body3) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code3, body3) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code3, &body3);
     let created = body3["usage"]["cache_creation_input_tokens"].as_u64().unwrap_or(0);
     let read = body3["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
@@ -369,7 +370,7 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
     let mut ctx = Context::new();
     ctx.push_user_text(big);
     ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).expect("roll to turn-1 tail");
-    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code1, &body1);
 
     // Turn 2: extend the conversation, then roll the breakpoint forward. The crate
@@ -378,7 +379,7 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
     ctx.push_assistant_text("ok");
     ctx.push_user_text("Reply with the single word: ok");
     ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).expect("roll to turn-2 tail");
-    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 64).unwrap(), &key);
+    let (code2, body2) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code2, &body2);
     let read = body2["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
     assert!(read > 0, "rolled prefix should be re-read on the 2nd turn, usage: {}", body2["usage"]);
