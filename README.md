@@ -4,7 +4,7 @@ Rust bindings for the [Anthropic Messages API](https://docs.anthropic.com/en/api
 
 Bring your own HTTP client. This crate hands you a `Serialize` request body; you POST it.
 
-Currently modeled: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+Currently modeled: `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
 
 ## Example
 
