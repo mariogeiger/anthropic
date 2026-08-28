@@ -21,19 +21,23 @@
 //! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
 //! customers, so they exercise 200/400 on any org with a `.key`.
 //!
-//! The Opus 5 cases (added 2026-08-28) were observed against a translating
+//! The Opus 5 cases (added 2026-08-28) were exercised against a translating
 //! gateway rather than the first-party API: adaptive thinking on by default,
-//! `{type:"disabled"}` accepted as the off state, `output_config.effort`
-//! graded from `low` to `max`, `display: "summarized"` yielding readable
-//! thinking text where `omitted` yields an empty block, `max_tokens` capped at
-//! 128,000, and `temperature` refused as deprecated for the model. A gateway
-//! can differ from the first-party API in both directions, so these assert the
-//! documented behavior and remain to be confirmed on an org with a `.key`.
+//! `{type:"disabled"}` accepted as the off state, `output_config.effort` graded
+//! from `low` to `max`, `display: "summarized"` yielding readable thinking text
+//! where `omitted` yields an empty block, `max_tokens` capped at exactly
+//! 128,000, the 1M context window refused above it by token count,
+//! `temperature` refused as deprecated, a 512-token cacheable prefix minimum,
+//! and `xhigh`/`max` refused while thinking is disabled. The per-model
+//! constants (pricing, cutoffs) are documented values, not wire-observable
+//! ones, and come from the model page. A gateway can differ from the
+//! first-party API in both directions, so these remain to be confirmed on an
+//! org with a `.key`.
 
 use anthropic::context::{CacheSlot, Context};
 use anthropic::request::{
-    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Request, Sonnet4_6Effort, Sonnet5Effort,
-    Temperature,
+    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Opus5ThinkingOffEffort, Request,
+    Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
 use anthropic::{CacheTtl, MESSAGES_PATH, ThinkingDisplay};
 use serde_json::{Value, json};
@@ -223,7 +227,8 @@ fn live_ok_opus_5_thinking_off() {
     // exists where `Opus4_8Thinking::Off` is simply the absent field.
     let key = key_or_skip!();
     let ctx = user_ctx("Reply with the single word: ok");
-    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5().with_thinking_off(), 16).unwrap(), &key);
+    let model = Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
 }
 
@@ -513,6 +518,23 @@ fn live_400_opus_5_temperature() {
     let body = json!({
         "model": "claude-opus-5", "max_tokens": 16,
         "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5,
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_opus_5_xhigh_with_thinking_disabled() {
+    // Effort and thinking are not independent on Opus 5: with thinking off the
+    // API accepts `high` and below and refuses `xhigh`/`max` outright. That is
+    // why effort is carried *on* `Opus5Thinking`, with the disabled variant
+    // taking the narrower `Opus5ThinkingOffEffort` — this body is one the crate
+    // cannot emit.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-opus-5", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "disabled"}, "output_config": {"effort": "xhigh"},
     });
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
     assert_400(code, &resp);

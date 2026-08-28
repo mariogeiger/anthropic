@@ -115,7 +115,7 @@ impl ModelId {
     pub fn min_cacheable_prefix_tokens(self) -> u32 {
         match self {
             ModelId::Fable5 => 512,
-            ModelId::Opus5 => 1_024,
+            ModelId::Opus5 => 512,
             ModelId::Opus4_8 => 1_024,
             ModelId::Sonnet5 => 1_024,
             ModelId::Sonnet4_6 => 1_024,
@@ -155,7 +155,7 @@ impl ModelId {
     pub fn knowledge_cutoff(self) -> YearMonth {
         let (year, month) = match self {
             ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 1),
+            ModelId::Opus5 => (2026, 5),
             ModelId::Opus4_8 => (2026, 1),
             ModelId::Sonnet5 => (2026, 1),
             ModelId::Sonnet4_6 => (2025, 8),
@@ -168,7 +168,7 @@ impl ModelId {
     pub fn training_cutoff(self) -> YearMonth {
         let (year, month) = match self {
             ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 1),
+            ModelId::Opus5 => (2026, 5),
             ModelId::Opus4_8 => (2026, 1),
             ModelId::Sonnet5 => (2026, 1),
             ModelId::Sonnet4_6 => (2026, 1),
@@ -326,19 +326,23 @@ api_enum! { Fable5Effort {
 // adaptive thinking are alternatives — there is no sampling knob to model at
 // all. Adaptive thinking is *on by default*: omitting `thinking` leaves it on,
 // so "off" must be stated as `{type: "disabled"}`, exactly as on Sonnet 5 and
-// unlike Opus 4.8, whose off state is the omitted field. Full Opus-tier effort
-// including `xhigh`.
+// unlike Opus 4.8, whose off state is the omitted field.
+//
+// Effort belongs to the thinking state rather than beside it, because the two
+// are not independent: with thinking on the full Opus-tier range applies,
+// `xhigh` and `max` included; with it off the API accepts only `high` and
+// below. Carrying effort on each variant makes the refused pair unwritable.
 
 pub struct Opus5 {
     pub thinking: Opus5Thinking,
-    pub effort: Opus5Effort,
 }
 
 impl Default for Opus5 {
-    /// Adaptive thinking on with `Omitted` display — the runtime default the API
-    /// applies when `thinking` is absent, emitted explicitly (§5).
+    /// Adaptive thinking on with `Omitted` display and the documented default
+    /// effort, `high` — the runtime default the API applies when `thinking` is
+    /// absent, emitted explicitly (§5).
     fn default() -> Self {
-        Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted }, effort: Opus5Effort::High }
+        Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted, effort: Opus5Effort::High } }
     }
 }
 
@@ -346,22 +350,37 @@ impl Opus5 {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Set the effort thinking is spent at. Only meaningful with thinking on;
+    /// with it off, effort is chosen through [`Opus5::with_thinking_off`],
+    /// whose narrower range is the one the API accepts in that state.
     pub fn with_effort(mut self, effort: Opus5Effort) -> Self {
-        self.effort = effort;
+        let display = match self.thinking {
+            Opus5Thinking::Adaptive { display, .. } => display,
+            Opus5Thinking::Disabled { .. } => ThinkingDisplay::Omitted,
+        };
+        self.thinking = Opus5Thinking::Adaptive { display, effort };
         self
     }
 
-    /// Set adaptive thinking's summary visibility. `display` defaults to `Omitted`
-    /// (blocks stream but text is empty); pass `Summarized` for visible text.
+    /// Set adaptive thinking's summary visibility, turning thinking on where it
+    /// was off. `display` defaults to `Omitted` (blocks stream but text is
+    /// empty); pass `Summarized` for visible text.
     pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        self.thinking = Opus5Thinking::Adaptive { display };
+        let effort = match self.thinking {
+            Opus5Thinking::Adaptive { effort, .. } => effort,
+            Opus5Thinking::Disabled { .. } => Opus5Effort::High,
+        };
+        self.thinking = Opus5Thinking::Adaptive { display, effort };
         self
     }
 
-    /// Turn thinking off. Emits `{type: "disabled"}` explicitly: on Opus 5 an
-    /// omitted `thinking` field leaves adaptive thinking on, so off must be stated.
-    pub fn with_thinking_off(mut self) -> Self {
-        self.thinking = Opus5Thinking::Disabled;
+    /// Turn thinking off at `effort`. Emits `{type: "disabled"}` explicitly: on
+    /// Opus 5 an omitted `thinking` field leaves adaptive thinking on, so off
+    /// must be stated. The effort range narrows to `high` and below, which is
+    /// what [`Opus5ThinkingOffEffort`] carries.
+    pub fn with_thinking_off(mut self, effort: Opus5ThinkingOffEffort) -> Self {
+        self.thinking = Opus5Thinking::Disabled { effort };
         self
     }
 }
@@ -369,15 +388,28 @@ impl Opus5 {
 pub enum Opus5Thinking {
     Adaptive {
         display: ThinkingDisplay,
+        effort: Opus5Effort,
     },
     /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
-    /// Opus 5 means adaptive thinking on.
-    Disabled,
+    /// Opus 5 means adaptive thinking on. Carries its own effort, because the
+    /// API accepts a narrower range with thinking off (`high` and below) than
+    /// with it on: `xhigh` and `max` are refused as
+    /// "not supported when thinking is disabled on this model".
+    Disabled {
+        effort: Opus5ThinkingOffEffort,
+    },
 }
 
-// Full Opus-tier range, `xhigh` included.
+// Full Opus-tier range, `xhigh` included. Reachable only with thinking on.
 api_enum! { Opus5Effort {
     Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
+}}
+
+// What `output_config.effort` may say once thinking is off. The two levels
+// above `high` exist on this model but not in this state, so they are absent
+// from the type rather than rejected at runtime (§2).
+api_enum! { Opus5ThinkingOffEffort {
+    Low => "low", Medium => "medium", High => "high",
 }}
 
 // ── Opus 4.8 ─────────────────────────────────────────────────────────────────
@@ -736,16 +768,16 @@ impl Serialize for Request<'_> {
             // Adaptive thinking is always emitted explicitly; "off" is the explicit
             // disabled block, not an omitted field (§5). No sampling: `temperature`
             // is rejected as deprecated on this model.
-            Model::Opus5(p) => (
-                None,
-                Some(match &p.thinking {
-                    Opus5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
-                    Opus5Thinking::Disabled => {
-                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })
-                    }
-                }),
-                effort(p.effort.as_str()),
-            ),
+            Model::Opus5(p) => match &p.thinking {
+                Opus5Thinking::Adaptive { display, effort: e } => {
+                    (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
+                }
+                Opus5Thinking::Disabled { effort: e } => (
+                    None,
+                    Some(ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })),
+                    effort(e.as_str()),
+                ),
+            },
             Model::Opus4_8(p) => (
                 None,
                 match &p.thinking {
