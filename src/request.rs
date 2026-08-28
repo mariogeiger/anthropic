@@ -69,6 +69,7 @@ impl Default for Temperature {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelId {
     Fable5,
+    Opus5,
     Opus4_8,
     Sonnet5,
     Sonnet4_6,
@@ -97,6 +98,7 @@ impl ModelId {
     pub fn api_id(self) -> &'static str {
         match self {
             ModelId::Fable5 => "claude-fable-5",
+            ModelId::Opus5 => "claude-opus-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
             ModelId::Sonnet5 => "claude-sonnet-5",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
@@ -113,6 +115,7 @@ impl ModelId {
     pub fn min_cacheable_prefix_tokens(self) -> u32 {
         match self {
             ModelId::Fable5 => 512,
+            ModelId::Opus5 => 1_024,
             ModelId::Opus4_8 => 1_024,
             ModelId::Sonnet5 => 1_024,
             ModelId::Sonnet4_6 => 1_024,
@@ -124,6 +127,7 @@ impl ModelId {
     pub fn context_window_tokens(self) -> u32 {
         match self {
             ModelId::Fable5 => 1_000_000,
+            ModelId::Opus5 => 1_000_000,
             ModelId::Opus4_8 => 1_000_000,
             ModelId::Sonnet5 => 1_000_000,
             ModelId::Sonnet4_6 => 1_000_000,
@@ -138,6 +142,7 @@ impl ModelId {
     pub fn max_output_tokens(self) -> u32 {
         match self {
             ModelId::Fable5 => 128_000,
+            ModelId::Opus5 => 128_000,
             ModelId::Opus4_8 => 128_000,
             ModelId::Sonnet5 => 128_000,
             ModelId::Sonnet4_6 => 128_000,
@@ -150,6 +155,7 @@ impl ModelId {
     pub fn knowledge_cutoff(self) -> YearMonth {
         let (year, month) = match self {
             ModelId::Fable5 => (2026, 1),
+            ModelId::Opus5 => (2026, 1),
             ModelId::Opus4_8 => (2026, 1),
             ModelId::Sonnet5 => (2026, 1),
             ModelId::Sonnet4_6 => (2025, 8),
@@ -162,6 +168,7 @@ impl ModelId {
     pub fn training_cutoff(self) -> YearMonth {
         let (year, month) = match self {
             ModelId::Fable5 => (2026, 1),
+            ModelId::Opus5 => (2026, 1),
             ModelId::Opus4_8 => (2026, 1),
             ModelId::Sonnet5 => (2026, 1),
             ModelId::Sonnet4_6 => (2026, 1),
@@ -174,6 +181,7 @@ impl ModelId {
     pub fn price_per_mtok(self) -> Pricing {
         let (input, output) = match self {
             ModelId::Fable5 => (1_000, 5_000),
+            ModelId::Opus5 => (500, 2_500),
             ModelId::Opus4_8 => (500, 2_500),
             // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
             ModelId::Sonnet5 => (300, 1_500),
@@ -187,6 +195,7 @@ impl ModelId {
 /// A Claude model plus its per-call parameters.
 pub enum Model {
     Fable5(Fable5),
+    Opus5(Opus5),
     Opus4_8(Opus4_8),
     Sonnet5(Sonnet5),
     Sonnet4_6(Sonnet4_6),
@@ -198,6 +207,7 @@ impl Model {
     pub fn id(&self) -> ModelId {
         match self {
             Model::Fable5(_) => ModelId::Fable5,
+            Model::Opus5(_) => ModelId::Opus5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
             Model::Sonnet5(_) => ModelId::Sonnet5,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
@@ -221,6 +231,9 @@ impl Model {
     pub fn fable_5() -> Fable5 {
         Fable5::default()
     }
+    pub fn opus_5() -> Opus5 {
+        Opus5::default()
+    }
     pub fn opus_4_8() -> Opus4_8 {
         Opus4_8::default()
     }
@@ -238,6 +251,11 @@ impl Model {
 impl From<Fable5> for Model {
     fn from(p: Fable5) -> Self {
         Model::Fable5(p)
+    }
+}
+impl From<Opus5> for Model {
+    fn from(p: Opus5) -> Self {
+        Model::Opus5(p)
     }
 }
 impl From<Opus4_8> for Model {
@@ -299,6 +317,66 @@ impl Fable5 {
 
 // Same range as Opus-tier (`xhigh` is Opus 4.7+/Fable; Sonnet rejects it).
 api_enum! { Fable5Effort {
+    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
+}}
+
+// ── Opus 5 ───────────────────────────────────────────────────────────────────
+// Current Opus tier. No sampling: `temperature` is rejected outright as
+// deprecated for this model, so — unlike Sonnet 4.6, where temperature and
+// adaptive thinking are alternatives — there is no sampling knob to model at
+// all. Adaptive thinking is *on by default*: omitting `thinking` leaves it on,
+// so "off" must be stated as `{type: "disabled"}`, exactly as on Sonnet 5 and
+// unlike Opus 4.8, whose off state is the omitted field. Full Opus-tier effort
+// including `xhigh`.
+
+pub struct Opus5 {
+    pub thinking: Opus5Thinking,
+    pub effort: Opus5Effort,
+}
+
+impl Default for Opus5 {
+    /// Adaptive thinking on with `Omitted` display — the runtime default the API
+    /// applies when `thinking` is absent, emitted explicitly (§5).
+    fn default() -> Self {
+        Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted }, effort: Opus5Effort::High }
+    }
+}
+
+impl Opus5 {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn with_effort(mut self, effort: Opus5Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Set adaptive thinking's summary visibility. `display` defaults to `Omitted`
+    /// (blocks stream but text is empty); pass `Summarized` for visible text.
+    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
+        self.thinking = Opus5Thinking::Adaptive { display };
+        self
+    }
+
+    /// Turn thinking off. Emits `{type: "disabled"}` explicitly: on Opus 5 an
+    /// omitted `thinking` field leaves adaptive thinking on, so off must be stated.
+    pub fn with_thinking_off(mut self) -> Self {
+        self.thinking = Opus5Thinking::Disabled;
+        self
+    }
+}
+
+pub enum Opus5Thinking {
+    Adaptive {
+        display: ThinkingDisplay,
+    },
+    /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
+    /// Opus 5 means adaptive thinking on.
+    Disabled,
+}
+
+// Full Opus-tier range, `xhigh` included.
+api_enum! { Opus5Effort {
     Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
 }}
 
@@ -655,6 +733,19 @@ impl Serialize for Request<'_> {
             // Thinking is always on — always emit the adaptive block (§5: the
             // request is a complete record of what the model sees).
             Model::Fable5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
+            // Adaptive thinking is always emitted explicitly; "off" is the explicit
+            // disabled block, not an omitted field (§5). No sampling: `temperature`
+            // is rejected as deprecated on this model.
+            Model::Opus5(p) => (
+                None,
+                Some(match &p.thinking {
+                    Opus5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
+                    Opus5Thinking::Disabled => {
+                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })
+                    }
+                }),
+                effort(p.effort.as_str()),
+            ),
             Model::Opus4_8(p) => (
                 None,
                 match &p.thinking {

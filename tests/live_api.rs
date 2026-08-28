@@ -11,8 +11,8 @@
 //! Two kinds of test:
 //!   * `live_ok_*`  — a body the crate *produces* is accepted (HTTP 200).
 //!   * `live_400_*` — a combo the crate makes *unrepresentable* really is a
-//!                    400 at the API, documenting why the type system forbids it
-//!                    (CLAUDE.md §2). These post raw JSON the crate can't emit.
+//!     400 at the API, documenting why the type system forbids it
+//!     (CLAUDE.md §2). These post raw JSON the crate can't emit.
 //!
 //! Every result below was observed live on 2026-05-29, except the Fable 5 cases
 //! (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
@@ -20,10 +20,20 @@
 //! assert the documented behavior for orgs that do have access. The Sonnet 5 cases
 //! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
 //! customers, so they exercise 200/400 on any org with a `.key`.
+//!
+//! The Opus 5 cases (added 2026-08-28) were observed against a translating
+//! gateway rather than the first-party API: adaptive thinking on by default,
+//! `{type:"disabled"}` accepted as the off state, `output_config.effort`
+//! graded from `low` to `max`, `display: "summarized"` yielding readable
+//! thinking text where `omitted` yields an empty block, `max_tokens` capped at
+//! 128,000, and `temperature` refused as deprecated for the model. A gateway
+//! can differ from the first-party API in both directions, so these assert the
+//! documented behavior and remain to be confirmed on an org with a `.key`.
 
 use anthropic::context::{CacheSlot, Context};
 use anthropic::request::{
-    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
+    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Request, Sonnet4_6Effort, Sonnet5Effort,
+    Temperature,
 };
 use anthropic::{CacheTtl, MESSAGES_PATH, ThinkingDisplay};
 use serde_json::{Value, json};
@@ -191,6 +201,39 @@ fn live_ok_sonnet_4_6_adaptive_max_effort() {
     let ctx = user_ctx("Think briefly, then reply: ok");
     let model =
         Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Sonnet4_6Effort::Max);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_opus_5_default() {
+    // The crate's default Opus 5 body: adaptive thinking on (omitted display),
+    // effort high, no sampling.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply with the single word: ok");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 16).unwrap(), &key);
+    assert_ok(code, &body);
+    assert_eq!(body["model"], "claude-opus-5");
+}
+
+#[test]
+fn live_ok_opus_5_thinking_off() {
+    // Opus 5 reaches thinking-off through `{type:"disabled"}`, not through an
+    // omitted field (which leaves adaptive on) — why `Opus5Thinking::Disabled`
+    // exists where `Opus4_8Thinking::Off` is simply the absent field.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply with the single word: ok");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5().with_thinking_off(), 16).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_opus_5_summarized_xhigh() {
+    // `xhigh` is accepted on the Opus tier, and `Summarized` display is what
+    // makes the thinking text readable rather than an empty block.
+    let key = key_or_skip!();
+    let ctx = user_ctx("Think briefly, then reply: ok");
+    let model = Model::opus_5().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Opus5Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
 }
@@ -459,6 +502,20 @@ fn live_400_sonnet_xhigh() {
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
     let m = assert_400(code, &resp);
     assert!(m.contains("xhigh"), "unexpected message: {m}");
+}
+
+#[test]
+fn live_400_opus_5_temperature() {
+    // Opus 5 rejects `temperature` outright as deprecated for the model — why
+    // `Opus5` carries no sampling knob at all, not even the temperature-or-adaptive
+    // choice `Sonnet4_6` models.
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-opus-5", "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}], "temperature": 0.5,
+    });
+    let (code, resp) = msg(MESSAGES_PATH, &body, &key);
+    assert_400(code, &resp);
 }
 
 #[test]
