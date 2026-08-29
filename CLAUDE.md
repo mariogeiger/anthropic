@@ -48,12 +48,35 @@ The one kind of omission the crate uses is for optional fields that are genuinel
 
 ## 6. Scope
 
-Bindings only. The crate produces a serializable request body for the Messages API and its token-counting sibling — no HTTP client, no JSON response deserializer, no streaming decoder, no retry logic. Callers bring their own HTTP stack.
+Bindings for both halves of the wire: the crate produces a serializable request body and decodes what comes back. No HTTP client, no retry logic, no reconnection. Callers bring their own HTTP stack and hand the bytes over.
 
-Static lookup tables for API-documented wire values are part of the wire vocabulary and stay in-scope: enum `from_str` (inverse of `as_str`), and the documented HTTP-status-code → `ErrorType` mapping. The test for "in-scope" is that the helper is a pure `match` on a primitive (`&str`, `u16`) — no string manipulation, no JSON field names, no runtime state. A constant like `INPUT_TOKENS = "input_tokens"` does not qualify: it only helps callers parse a response body, which is out of scope.
+Decoding is in scope for the same reason the request half is: a consumer that hand-matches raw JSON re-derives the API's shape badly, and the failure modes that matter — a stream that stopped early, a cache that silently did nothing — are exactly the ones a type can rule out. So the inbound side is held to the outbound side's standard.
+
+Three rules keep it honest:
+
+*Unknown is not broken.* Anthropic's versioning policy permits new event types, and adding one is a compatible change. An unrecognized event, content-block kind, or delta kind is therefore a variant that means "ignore me", never an error. What *is* an error is a frame that contradicts the schema: not JSON, not an object, no `type`, a field of the wrong type, or a `usage` object that will not deserialize.
+
+*Incomplete is a different type from complete.* A truncated stream must not be readable as a finished message. `Settling` accumulates and cannot yield a message; `Settled` is a finished message and cannot take more events; `Settling::settle` is the only bridge and fails on a stream that never reached a terminal event. `#[non_exhaustive]` on `Settled` is what makes that claim structural rather than decorative — a caller cannot write the struct literal, so a finished message can only come from a finished stream. Note that `message_delta` carries the `stop_reason` but is *not* terminal: only `message_stop` and `error` are.
+
+*Cache accounting is not optional detail.* A cached prefix below the model's minimum is a silent no-op, and the only evidence is `usage`. So usage decodes rather than being skipped, and the merge across frames is a pointwise maximum — the join of a product lattice of counters — so a later frame that omits a field cannot zero it.
+
+Static lookup tables for API-documented wire values are part of the wire vocabulary: enum `from_str` (inverse of `as_str`), and the documented HTTP-status-code → `ErrorType` mapping. Both are pure `match` on a primitive.
+
+Out of scope, deliberately: mid-conversation tool changes (`tool_addition`, `tool_removal`). Measured against the gateway, they are rejected with a 400. Mid-conversation system messages (`{"role": "system"}` appended to `messages`) are accepted and are a plausible later addition; see §7 for what they would take.
 
 The crate tracks the current Claude tiers. Older models are not wired up by default, but adding them is a normal extension — follow the per-model-type approach in §2.
 
-## 7. Details
+## 7. Mid-conversation system messages
+
+Anthropic supports appending a `{"role": "system"}` message to `messages` on Fable 5, Opus 5, and Opus 4.8, adding an instruction partway through a conversation *without* invalidating the system or message caches — the cached prefix is untouched because nothing before it changed. The gateway accepts it. This crate cannot express it yet, and the obstruction is structural rather than a missing field:
+
+- `Message::role` is set only by the `push_*` methods, so `"system"` is unreachable by design. That guard is worth keeping; the addition is a `push_system` beside the others, not a public `role`.
+- The blocker is `SystemPrompt`: system content is one private top-level struct with two wire shapes, so "the system prompt" and "a system message in the history" are different types today. Supporting both means system content becoming a shared block type that either position can hold.
+- Cache slots then need a fourth `SlotLocation`, and `flow_key` a position for it. A mid-conversation system message sits *in* the message sequence, so its flow key belongs with the messages, not with the top-level system anchor — getting that wrong would let TTL-ordering validation pass on a request the API rejects.
+- It is per-model: Sonnet 5 refuses it. Under §2 that makes it a per-model-type capability, not a widening of the shared `Context`.
+
+Doing it properly is a change to §1's invariants, which is why it is not a drive-by.
+
+## 8. Details
 
 Work in the main branch.

@@ -23,6 +23,11 @@ use serde_json::Value;
 
 // ── Cache control ────────────────────────────────────────────────────────────
 
+/// A cache breakpoint's wire form.
+///
+/// Has no public constructor and no public fields, and every `cache_control` slot
+/// that holds one is crate-private. So the only way to place a breakpoint is
+/// through a [`CacheSlot`], which keeps slot bookkeeping consistent with content.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
@@ -36,11 +41,20 @@ impl CacheControl {
     }
 }
 
+/// One of the four cache breakpoints a request may carry.
+///
+/// A fixed, named set that mirrors the API's limit one-to-one, so asking for more
+/// breakpoints than the API accepts is not a runtime error but an unwritable
+/// program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSlot {
+    /// The first slot.
     S0,
+    /// The second slot.
     S1,
+    /// The third slot.
     S2,
+    /// The fourth slot.
     S3,
 }
 
@@ -68,38 +82,68 @@ struct SlotState {
 
 // ── Images & tool results ────────────────────────────────────────────────────
 
+/// Where an image's bytes come from.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImageSource {
-    Base64 { media_type: &'static str, data: String },
-    Url { url: String },
-    File { file_id: String },
+    /// Bytes inline, base64-encoded.
+    Base64 {
+        /// The image's media type.
+        media_type: &'static str,
+        /// The base64 payload.
+        data: String,
+    },
+    /// A URL the API fetches.
+    Url {
+        /// Where to fetch it.
+        url: String,
+    },
+    /// A file already uploaded through the Files API.
+    File {
+        /// Its identifier.
+        file_id: String,
+    },
 }
 
 impl ImageSource {
+    /// Inline base64 bytes of the given media type.
     pub fn base64(media_type: ImageMediaType, data: impl Into<String>) -> Self {
         ImageSource::Base64 { media_type: media_type.as_str(), data: data.into() }
     }
+    /// A URL for the API to fetch.
     pub fn url(url: impl Into<String>) -> Self {
         ImageSource::Url { url: url.into() }
     }
+    /// A file already uploaded through the Files API.
     pub fn file(file_id: impl Into<String>) -> Self {
         ImageSource::File { file_id: file_id.into() }
     }
 }
 
+/// What a tool returned.
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ToolResultContent {
+    /// Plain text, the common case.
     Text(String),
+    /// Several blocks, for a result carrying images alongside text.
     Blocks(Vec<ToolResultItem>),
 }
 
+/// One block of a multi-block tool result.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolResultItem {
-    Text { text: String },
-    Image { source: ImageSource },
+    /// Text.
+    Text {
+        /// The text.
+        text: String,
+    },
+    /// An image.
+    Image {
+        /// Where its bytes come from.
+        source: ImageSource,
+    },
 }
 
 // ── Content blocks ───────────────────────────────────────────────────────────
@@ -107,74 +151,115 @@ pub enum ToolResultItem {
 // callers can read the content fields but cannot set, swap, or clone a
 // `CacheControl` into place. The only path is through a `CacheSlot`.
 
+/// A text block to send.
 #[derive(Debug, Clone, Serialize)]
 pub struct TextBlock {
+    /// The text.
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// An image block to send.
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageBlock {
+    /// Where the image's bytes come from.
     pub source: ImageSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// A tool call to replay into the conversation.
+///
+/// Sent back on the turn after the model made it, so that the tool result has a
+/// call to answer.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolUseBlock {
+    /// The identifier the matching [`ToolResultBlock`] repeats.
     pub id: String,
+    /// Which tool was called.
     pub name: String,
+    /// The input it was called with.
     pub input: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// A tool's answer to one call.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolResultBlock {
+    /// The [`ToolUseBlock::id`] this answers.
     pub tool_use_id: String,
+    /// What the tool returned.
     pub content: ToolResultContent,
-    pub is_error: bool, // runtime bool, not Option<bool>: every result is error-or-not
+    /// Whether the tool failed. A plain `bool`, not an `Option`: every result
+    /// either succeeded or did not, so there is no third state to represent.
+    pub is_error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// A thinking block to replay into the conversation.
+///
+/// Sent back with its signature so the API can verify it. Thinking blocks cannot
+/// carry a breakpoint of their own, but they *are* cached as part of a prefix that
+/// ends after them.
 #[derive(Debug, Clone, Serialize)]
 pub struct ThinkingBlock {
+    /// The reasoning text, empty when it was produced under
+    /// [`crate::values::ThinkingDisplay::Omitted`].
     pub thinking: String,
+    /// The signature the API issued for it.
     pub signature: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// A redacted thinking block to replay into the conversation, opaque bytes and all.
 #[derive(Debug, Clone, Serialize)]
 pub struct RedactedThinkingBlock {
+    /// The opaque payload.
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+/// One block of content to send.
+///
+/// The outbound counterpart of [`crate::content::StreamedBlock`]: this one carries
+/// cache-breakpoint metadata and models what a caller may put *into* a prompt,
+/// which is not the same set the model produces.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
+    /// Text.
     Text(TextBlock),
+    /// An image.
     Image(ImageBlock),
+    /// A tool call being replayed.
     ToolUse(ToolUseBlock),
+    /// A tool's answer to one.
     ToolResult(ToolResultBlock),
+    /// A thinking block being replayed.
     Thinking(ThinkingBlock),
+    /// A redacted thinking block being replayed.
     RedactedThinking(RedactedThinkingBlock),
 }
 
 impl ContentBlock {
+    /// A text block.
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text(TextBlock { text: text.into(), cache_control: None })
     }
+    /// An image block.
     pub fn image(source: ImageSource) -> Self {
         Self::Image(ImageBlock { source, cache_control: None })
     }
+    /// A tool call being replayed.
     pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
         Self::ToolUse(ToolUseBlock { id: id.into(), name: name.into(), input, cache_control: None })
     }
+    /// A successful tool result.
     pub fn tool_result(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
         Self::ToolResult(ToolResultBlock {
             tool_use_id: tool_use_id.into(),
@@ -183,6 +268,7 @@ impl ContentBlock {
             cache_control: None,
         })
     }
+    /// A failed tool result, which the model is told about via `is_error`.
     pub fn tool_result_err(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
         Self::ToolResult(ToolResultBlock {
             tool_use_id: tool_use_id.into(),
@@ -206,26 +292,42 @@ impl ContentBlock {
 
 // ── Messages, tools, system ──────────────────────────────────────────────────
 
+/// One turn of the conversation.
 #[derive(Debug, Clone, Serialize)]
 pub struct Message {
+    /// `"user"` or `"assistant"`. Set by the `push_*` methods, never by hand, so
+    /// an unknown role cannot reach the wire.
     pub role: &'static str,
+    /// The turn's content blocks.
     pub content: Vec<ContentBlock>,
 }
 
+/// One tool the model may call.
+///
+/// Changing any of these fields invalidates the whole cache — tools sit first in
+/// the `tools → system → messages` hierarchy, so a change there invalidates every
+/// level. Compare [`crate::tool_choice::ToolChoice`], which costs only the message
+/// cache.
 #[derive(Debug, Clone, Serialize)]
 pub struct Tool {
+    /// The name the model calls it by, and that its `tool_use` blocks carry.
     pub name: String,
+    /// What it does, in the model's words.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Its JSON Schema. Key order matters for caching: a schema whose keys move
+    /// between requests is a different prefix.
     pub input_schema: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
 
 impl Tool {
+    /// A tool with this name and schema, and no description yet.
     pub fn new(name: impl Into<String>, input_schema: Value) -> Self {
         Self { name: name.into(), description: None, input_schema, cache_control: None }
     }
+    /// Describes what the tool does.
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());
         self
@@ -258,6 +360,7 @@ impl Serialize for SystemPrompt {
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
+/// Why a rolling cache breakpoint could not be placed or moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RollCacheError {
     /// Slot is occupied by a `system`/`tools` anchor and cannot be moved.
@@ -293,6 +396,7 @@ impl std::fmt::Display for RollCacheError {
 
 impl std::error::Error for RollCacheError {}
 
+/// Why a `system` or `tools` cache anchor could not be placed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnchorError {
     /// A cache slot already holds a breakpoint. Anchors never overwrite.
@@ -314,6 +418,13 @@ impl std::error::Error for AnchorError {}
 
 // ── Context ──────────────────────────────────────────────────────────────────
 
+/// The conversation, and the cache invariants that hold over it.
+///
+/// Append-only by construction: there is no `&mut` path to a committed message,
+/// because rewriting history silently invalidates the prompt cache. System prompt
+/// and tools are set once, at construction. Breakpoints live in four named
+/// [`CacheSlot`]s and are moved by metadata-only operations that validate TTL
+/// ordering *before* they commit.
 pub struct Context {
     pub(crate) system: Option<SystemPrompt>,
     pub(crate) tools: Vec<Tool>,
@@ -328,10 +439,12 @@ impl Default for Context {
 }
 
 impl Context {
+    /// An empty conversation with no system prompt, tools, or breakpoints.
     pub fn new() -> Self {
         Self { system: None, tools: Vec::new(), messages: Vec::new(), slots: [None; 4] }
     }
 
+    /// Sets the system prompt, uncached.
     pub fn with_system(mut self, text: impl Into<String>) -> Self {
         self.system = Some(SystemPrompt { text: text.into(), cache_control: None });
         self
@@ -349,6 +462,7 @@ impl Context {
         Ok(self)
     }
 
+    /// Sets the tools, uncached.
     pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
         self.tools = tools;
         self
@@ -369,18 +483,23 @@ impl Context {
     fn push(&mut self, role: &'static str, content: Vec<ContentBlock>) {
         self.messages.push(Message { role, content });
     }
+    /// Appends a user turn.
     pub fn push_user(&mut self, blocks: Vec<ContentBlock>) {
         self.push("user", blocks);
     }
+    /// Appends an assistant turn — the model's own reply, replayed.
     pub fn push_assistant(&mut self, blocks: Vec<ContentBlock>) {
         self.push("assistant", blocks);
     }
+    /// Appends a user turn of one text block.
     pub fn push_user_text(&mut self, text: impl Into<String>) {
         self.push("user", vec![ContentBlock::text(text)]);
     }
+    /// Appends an assistant turn of one text block.
     pub fn push_assistant_text(&mut self, text: impl Into<String>) {
         self.push("assistant", vec![ContentBlock::text(text)]);
     }
+    /// Appends a tool result as a user turn, which is where the API expects one.
     pub fn push_tool_result(&mut self, tool_use_id: impl Into<String>, content: ToolResultContent) {
         self.push("user", vec![ContentBlock::tool_result(tool_use_id, content)]);
     }
@@ -437,10 +556,12 @@ impl Context {
         Ok(())
     }
 
+    /// How many of the four slots hold a breakpoint.
     pub fn breakpoint_count(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()
     }
 
+    /// How many turns the conversation holds.
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }

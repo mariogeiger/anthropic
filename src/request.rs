@@ -1,619 +1,37 @@
-//! Per-call request params and serialization to the `/v1/messages` body.
+//! Per-call parameters, and the bodies they serialize into.
 //!
-//! Each `Model` variant carries only the parameters its underlying model accepts —
-//! unrepresentable combinations cannot be constructed. The latest model in each
-//! tier is supported: the Fable 5 frontier tier, plus Opus 4.8, Sonnet 5, Haiku 4.5.
-//! Sonnet 4.6 is kept as the prior Sonnet tier (still an active model).
-
-#![allow(non_camel_case_types)]
+//! Conversation state lives in [`Context`] and is stable across turns; what
+//! changes per call is here. That split is what lets one conversation be sent to
+//! different models or with different sampling settings without touching the
+//! type that upholds the cache invariants.
+//!
+//! [`Request`] is the `/v1/messages` body and [`CountRequest`] its
+//! token-counting sibling, which takes only a [`ModelId`] because the endpoint
+//! ignores sampling and thinking — exposing them there would let a caller set
+//! values the payload silently drops.
+//!
+//! Serialization is explicit: what a request value says is what the model sees.
+//! There is no omit-if-default, and scalar parameters with a documented
+//! server-side default are emitted anyway, so a change to the provider's
+//! defaults cannot quietly change behavior. The two exceptions are transport
+//! rather than content — `stream`, which the model never sees, and
+//! `tool_choice`, whose absence must stay byte-identical to a request that never
+//! mentioned it or the message cache key moves.
 
 use crate::context::{Context, Message, SystemPrompt, Tool};
-use crate::values::api_enum;
-use crate::{ThinkingDisplay, ThinkingType};
+use crate::tool_choice::ToolChoice;
+use crate::values::ThinkingType;
 use serde::Serialize;
 
-// ── Temperature ──────────────────────────────────────────────────────────────
-
-/// Sampling temperature. API-accepted range is `[0.0, 1.0]` and the value must
-/// be finite — constructing a `Temperature` is the only way to prove that,
-/// so downstream code never has to re-check.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Temperature(f32);
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TemperatureError {
-    /// Value was NaN or infinite.
-    NotFinite,
-    /// Value was finite but outside the API-accepted `[0.0, 1.0]` range.
-    OutOfRange(f32),
-}
-
-impl std::fmt::Display for TemperatureError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TemperatureError::NotFinite => write!(f, "temperature must be finite"),
-            TemperatureError::OutOfRange(v) => write!(f, "temperature {v} is outside [0.0, 1.0]"),
-        }
-    }
-}
-
-impl std::error::Error for TemperatureError {}
-
-impl Temperature {
-    pub fn new(v: f32) -> Result<Self, TemperatureError> {
-        if !v.is_finite() {
-            Err(TemperatureError::NotFinite)
-        } else if !(0.0..=1.0).contains(&v) {
-            Err(TemperatureError::OutOfRange(v))
-        } else {
-            Ok(Self(v))
-        }
-    }
-
-    pub fn get(self) -> f32 {
-        self.0
-    }
-}
-
-impl Default for Temperature {
-    /// API default is `1.0` (per Anthropic docs).
-    fn default() -> Self {
-        Self(1.0)
-    }
-}
-
-// ── Model variants ───────────────────────────────────────────────────────────
-
-/// Model identity without per-call parameters. Used where only the `model`
-/// field is meaningful (e.g. `CountRequest`, which ignores sampling/thinking).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelId {
-    Fable5,
-    Opus5,
-    Opus4_8,
-    Sonnet5,
-    Sonnet4_6,
-    Haiku4_5,
-}
-
-/// Standard list price per million tokens (MTok), in US cents (e.g. 500 = $5.00).
-/// Introductory/promotional pricing, batch and cache-tier rates, and per-platform
-/// pricing are not represented — verify against the Anthropic pricing docs before
-/// relying on this for billing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Pricing {
-    pub input_cents_per_mtok: u32,
-    pub output_cents_per_mtok: u32,
-}
-
-/// A calendar month, used for documented model cutoff dates (no day granularity).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct YearMonth {
-    pub year: u16,
-    pub month: u8,
-}
-
-impl ModelId {
-    /// The `model` field value sent on the wire.
-    pub fn api_id(self) -> &'static str {
-        match self {
-            ModelId::Fable5 => "claude-fable-5",
-            ModelId::Opus5 => "claude-opus-5",
-            ModelId::Opus4_8 => "claude-opus-4-8",
-            ModelId::Sonnet5 => "claude-sonnet-5",
-            ModelId::Sonnet4_6 => "claude-sonnet-4-6",
-            ModelId::Haiku4_5 => "claude-haiku-4-5",
-        }
-    }
-
-    /// Minimum prefix length, in tokens, that this model will cache. A cached
-    /// prefix shorter than this is a *silent* no-op — the API caches nothing and
-    /// returns no error (detectable only via `usage.cache_read_input_tokens`), so
-    /// this is documented behavior, not a request-validity rule the type system
-    /// can enforce. Values per the Anthropic prompt-caching docs (first-party API;
-    /// some platforms differ — e.g. Fable 5 is 1024 on Amazon Bedrock).
-    pub fn min_cacheable_prefix_tokens(self) -> u32 {
-        match self {
-            ModelId::Fable5 => 512,
-            ModelId::Opus5 => 512,
-            ModelId::Opus4_8 => 1_024,
-            ModelId::Sonnet5 => 1_024,
-            ModelId::Sonnet4_6 => 1_024,
-            ModelId::Haiku4_5 => 4_096,
-        }
-    }
-
-    /// Total context-window size in tokens. Input and output share this budget.
-    pub fn context_window_tokens(self) -> u32 {
-        match self {
-            ModelId::Fable5 => 1_000_000,
-            ModelId::Opus5 => 1_000_000,
-            ModelId::Opus4_8 => 1_000_000,
-            ModelId::Sonnet5 => 1_000_000,
-            ModelId::Sonnet4_6 => 1_000_000,
-            ModelId::Haiku4_5 => 200_000,
-        }
-    }
-
-    /// Maximum output tokens in a single synchronous Messages API response.
-    /// `Request::new` rejects `max_tokens` outside `1..=max_output_tokens()`.
-    /// (The Message Batches API permits more on some models via a beta header,
-    /// which this crate does not model.)
-    pub fn max_output_tokens(self) -> u32 {
-        match self {
-            ModelId::Fable5 => 128_000,
-            ModelId::Opus5 => 128_000,
-            ModelId::Opus4_8 => 128_000,
-            ModelId::Sonnet5 => 128_000,
-            ModelId::Sonnet4_6 => 128_000,
-            ModelId::Haiku4_5 => 64_000,
-        }
-    }
-
-    /// Reliable knowledge cutoff: the date through which the model's knowledge is
-    /// most extensive and reliable (per the Anthropic models docs).
-    pub fn knowledge_cutoff(self) -> YearMonth {
-        let (year, month) = match self {
-            ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 5),
-            ModelId::Opus4_8 => (2026, 1),
-            ModelId::Sonnet5 => (2026, 1),
-            ModelId::Sonnet4_6 => (2025, 8),
-            ModelId::Haiku4_5 => (2025, 2),
-        };
-        YearMonth { year, month }
-    }
-
-    /// Training data cutoff: the broader end of the training-data date range.
-    pub fn training_cutoff(self) -> YearMonth {
-        let (year, month) = match self {
-            ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 5),
-            ModelId::Opus4_8 => (2026, 1),
-            ModelId::Sonnet5 => (2026, 1),
-            ModelId::Sonnet4_6 => (2026, 1),
-            ModelId::Haiku4_5 => (2025, 7),
-        };
-        YearMonth { year, month }
-    }
-
-    /// Standard list price per MTok (see [`Pricing`] for caveats).
-    pub fn price_per_mtok(self) -> Pricing {
-        let (input, output) = match self {
-            ModelId::Fable5 => (1_000, 5_000),
-            ModelId::Opus5 => (500, 2_500),
-            ModelId::Opus4_8 => (500, 2_500),
-            // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
-            ModelId::Sonnet5 => (300, 1_500),
-            ModelId::Sonnet4_6 => (300, 1_500),
-            ModelId::Haiku4_5 => (100, 500),
-        };
-        Pricing { input_cents_per_mtok: input, output_cents_per_mtok: output }
-    }
-}
-
-/// A Claude model plus its per-call parameters.
-pub enum Model {
-    Fable5(Fable5),
-    Opus5(Opus5),
-    Opus4_8(Opus4_8),
-    Sonnet5(Sonnet5),
-    Sonnet4_6(Sonnet4_6),
-    Haiku4_5(Haiku4_5),
-}
-
-impl Model {
-    /// Identity without per-call parameters.
-    pub fn id(&self) -> ModelId {
-        match self {
-            Model::Fable5(_) => ModelId::Fable5,
-            Model::Opus5(_) => ModelId::Opus5,
-            Model::Opus4_8(_) => ModelId::Opus4_8,
-            Model::Sonnet5(_) => ModelId::Sonnet5,
-            Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
-            Model::Haiku4_5(_) => ModelId::Haiku4_5,
-        }
-    }
-
-    /// The `model` field value sent on the wire.
-    pub fn api_id(&self) -> &'static str {
-        self.id().api_id()
-    }
-
-    /// Minimum cacheable prefix length, in tokens
-    /// (see [`ModelId::min_cacheable_prefix_tokens`]).
-    pub fn min_cacheable_prefix_tokens(&self) -> u32 {
-        self.id().min_cacheable_prefix_tokens()
-    }
-
-    /// Default params for each model. Chain `.with_*` on the returned struct,
-    /// then pass to `Request::new` (which accepts `impl Into<Model>`).
-    pub fn fable_5() -> Fable5 {
-        Fable5::default()
-    }
-    pub fn opus_5() -> Opus5 {
-        Opus5::default()
-    }
-    pub fn opus_4_8() -> Opus4_8 {
-        Opus4_8::default()
-    }
-    pub fn sonnet_5() -> Sonnet5 {
-        Sonnet5::default()
-    }
-    pub fn sonnet_4_6() -> Sonnet4_6 {
-        Sonnet4_6::default()
-    }
-    pub fn haiku_4_5() -> Haiku4_5 {
-        Haiku4_5::default()
-    }
-}
-
-impl From<Fable5> for Model {
-    fn from(p: Fable5) -> Self {
-        Model::Fable5(p)
-    }
-}
-impl From<Opus5> for Model {
-    fn from(p: Opus5) -> Self {
-        Model::Opus5(p)
-    }
-}
-impl From<Opus4_8> for Model {
-    fn from(p: Opus4_8) -> Self {
-        Model::Opus4_8(p)
-    }
-}
-impl From<Sonnet5> for Model {
-    fn from(p: Sonnet5) -> Self {
-        Model::Sonnet5(p)
-    }
-}
-impl From<Sonnet4_6> for Model {
-    fn from(p: Sonnet4_6) -> Self {
-        Model::Sonnet4_6(p)
-    }
-}
-impl From<Haiku4_5> for Model {
-    fn from(p: Haiku4_5) -> Self {
-        Model::Haiku4_5(p)
-    }
-}
-
-// ── Fable 5 ──────────────────────────────────────────────────────────────────
-// Frontier tier. No sampling (temperature/top_p/top_k rejected). Thinking is
-// always on: `{type: "disabled"}` and legacy `{type: "enabled", budget_tokens}`
-// both 400, so unlike Opus 4.8 there is no "off" state — the only knob is
-// `display`. Depth is controlled by `output_config.effort` (low..=max, incl.
-// xhigh). `display` defaults to `Omitted` (blocks stream, text empty).
-
-pub struct Fable5 {
-    pub display: ThinkingDisplay,
-    pub effort: Fable5Effort,
-}
-
-impl Default for Fable5 {
-    fn default() -> Self {
-        Self { display: ThinkingDisplay::Omitted, effort: Fable5Effort::High }
-    }
-}
-
-impl Fable5 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_effort(mut self, effort: Fable5Effort) -> Self {
-        self.effort = effort;
-        self
-    }
-
-    /// Set the thinking summary visibility. Thinking can't be turned off on
-    /// Fable 5; pass `Summarized` for visible reasoning text, `Omitted` (default)
-    /// for empty thinking blocks.
-    pub fn with_display(mut self, display: ThinkingDisplay) -> Self {
-        self.display = display;
-        self
-    }
-}
-
-// Same range as Opus-tier (`xhigh` is Opus 4.7+/Fable; Sonnet rejects it).
-api_enum! { Fable5Effort {
-    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
-}}
-
-// ── Opus 5 ───────────────────────────────────────────────────────────────────
-// Current Opus tier. No sampling: `temperature` is rejected outright as
-// deprecated for this model, so — unlike Sonnet 4.6, where temperature and
-// adaptive thinking are alternatives — there is no sampling knob to model at
-// all. Adaptive thinking is *on by default*: omitting `thinking` leaves it on,
-// so "off" must be stated as `{type: "disabled"}`, exactly as on Sonnet 5 and
-// unlike Opus 4.8, whose off state is the omitted field.
-//
-// Effort belongs to the thinking state rather than beside it, because the two
-// are not independent: with thinking on the full Opus-tier range applies,
-// `xhigh` and `max` included; with it off the API accepts only `high` and
-// below. Carrying effort on each variant makes the refused pair unwritable.
-
-pub struct Opus5 {
-    pub thinking: Opus5Thinking,
-}
-
-impl Default for Opus5 {
-    /// Adaptive thinking on with `Omitted` display and the documented default
-    /// effort, `high` — the runtime default the API applies when `thinking` is
-    /// absent, emitted explicitly (§5).
-    fn default() -> Self {
-        Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted, effort: Opus5Effort::High } }
-    }
-}
-
-impl Opus5 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the effort thinking is spent at. Only meaningful with thinking on;
-    /// with it off, effort is chosen through [`Opus5::with_thinking_off`],
-    /// whose narrower range is the one the API accepts in that state.
-    pub fn with_effort(mut self, effort: Opus5Effort) -> Self {
-        let display = match self.thinking {
-            Opus5Thinking::Adaptive { display, .. } => display,
-            Opus5Thinking::Disabled { .. } => ThinkingDisplay::Omitted,
-        };
-        self.thinking = Opus5Thinking::Adaptive { display, effort };
-        self
-    }
-
-    /// Set adaptive thinking's summary visibility, turning thinking on where it
-    /// was off. `display` defaults to `Omitted` (blocks stream but text is
-    /// empty); pass `Summarized` for visible text.
-    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        let effort = match self.thinking {
-            Opus5Thinking::Adaptive { effort, .. } => effort,
-            Opus5Thinking::Disabled { .. } => Opus5Effort::High,
-        };
-        self.thinking = Opus5Thinking::Adaptive { display, effort };
-        self
-    }
-
-    /// Turn thinking off at `effort`. Emits `{type: "disabled"}` explicitly: on
-    /// Opus 5 an omitted `thinking` field leaves adaptive thinking on, so off
-    /// must be stated. The effort range narrows to `high` and below, which is
-    /// what [`Opus5ThinkingOffEffort`] carries.
-    pub fn with_thinking_off(mut self, effort: Opus5ThinkingOffEffort) -> Self {
-        self.thinking = Opus5Thinking::Disabled { effort };
-        self
-    }
-}
-
-pub enum Opus5Thinking {
-    Adaptive {
-        display: ThinkingDisplay,
-        effort: Opus5Effort,
-    },
-    /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
-    /// Opus 5 means adaptive thinking on. Carries its own effort, because the
-    /// API accepts a narrower range with thinking off (`high` and below) than
-    /// with it on: `xhigh` and `max` are refused as
-    /// "not supported when thinking is disabled on this model".
-    Disabled {
-        effort: Opus5ThinkingOffEffort,
-    },
-}
-
-// Full Opus-tier range, `xhigh` included. Reachable only with thinking on.
-api_enum! { Opus5Effort {
-    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
-}}
-
-// What `output_config.effort` may say once thinking is off. The two levels
-// above `high` exist on this model but not in this state, so they are absent
-// from the type rather than rejected at runtime (§2).
-api_enum! { Opus5ThinkingOffEffort {
-    Low => "low", Medium => "medium", High => "high",
-}}
-
-// ── Opus 4.8 ─────────────────────────────────────────────────────────────────
-// No sampling (temperature/top_p/top_k rejected). Adaptive thinking only;
-// legacy `{type: "enabled", budget_tokens}` is removed.
-
-pub struct Opus4_8 {
-    pub thinking: Opus4_8Thinking,
-    pub effort: Opus4_8Effort,
-}
-
-impl Default for Opus4_8 {
-    fn default() -> Self {
-        Self { thinking: Opus4_8Thinking::Off, effort: Opus4_8Effort::High }
-    }
-}
-
-impl Opus4_8 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_effort(mut self, effort: Opus4_8Effort) -> Self {
-        self.effort = effort;
-        self
-    }
-
-    /// Enable adaptive thinking. `display` defaults to `Omitted` on Opus 4.8
-    /// (blocks stream but text is empty); pass `Summarized` for visible text.
-    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        self.thinking = Opus4_8Thinking::Adaptive { display };
-        self
-    }
-
-    pub fn with_thinking_off(mut self) -> Self {
-        self.thinking = Opus4_8Thinking::Off;
-        self
-    }
-}
-
-pub enum Opus4_8Thinking {
-    /// `thinking` field omitted from the request.
-    Off,
-    Adaptive {
-        display: ThinkingDisplay,
-    },
-}
-
-// `Xhigh` is Opus-tier only (Opus 4.7 and later); Sonnet 4.6 rejects it (400).
-api_enum! { Opus4_8Effort {
-    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
-}}
-
-// ── Sonnet 5 ─────────────────────────────────────────────────────────────────
-// Current Sonnet tier. No sampling (temperature/top_p/top_k non-default rejected,
-// like Opus 4.8). Adaptive thinking is *on by default*: omitting `thinking` leaves
-// it on, so "off" has to be sent explicitly as `{type: "disabled"}` — unlike Opus
-// 4.8, whose off state is simply the omitted field. Legacy `{type: "enabled",
-// budget_tokens}` is removed (400). Full Opus-tier effort incl. `xhigh` (Sonnet 4.6
-// rejects `xhigh`). New tokenizer (~30% more tokens than Sonnet 4.6) — no wire effect.
-
-pub struct Sonnet5 {
-    pub thinking: Sonnet5Thinking,
-    pub effort: Sonnet5Effort,
-}
-
-impl Default for Sonnet5 {
-    /// Adaptive thinking on with `Omitted` display — the runtime default the API
-    /// applies when `thinking` is absent, emitted explicitly (§5).
-    fn default() -> Self {
-        Self { thinking: Sonnet5Thinking::Adaptive { display: ThinkingDisplay::Omitted }, effort: Sonnet5Effort::High }
-    }
-}
-
-impl Sonnet5 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_effort(mut self, effort: Sonnet5Effort) -> Self {
-        self.effort = effort;
-        self
-    }
-
-    /// Set adaptive thinking's summary visibility. `display` defaults to `Omitted`
-    /// (blocks stream but text is empty); pass `Summarized` for visible text.
-    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        self.thinking = Sonnet5Thinking::Adaptive { display };
-        self
-    }
-
-    /// Turn thinking off. Emits `{type: "disabled"}` explicitly: on Sonnet 5 an
-    /// omitted `thinking` field leaves adaptive thinking on, so off must be stated.
-    pub fn with_thinking_off(mut self) -> Self {
-        self.thinking = Sonnet5Thinking::Disabled;
-        self
-    }
-}
-
-pub enum Sonnet5Thinking {
-    Adaptive {
-        display: ThinkingDisplay,
-    },
-    /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
-    /// Sonnet 5 means adaptive thinking on.
-    Disabled,
-}
-
-// Full Opus-tier range: `xhigh` is accepted on Sonnet 5 (Sonnet 4.6 rejects it).
-api_enum! { Sonnet5Effort {
-    Low => "low", Medium => "medium", High => "high", Xhigh => "xhigh", Max => "max",
-}}
-
-// ── Sonnet 4.6 ───────────────────────────────────────────────────────────────
-// Temperature OR adaptive thinking (API forces temperature=1.0 under adaptive).
-// No `Xhigh` effort (Opus-tier only; Sonnet rejects it).
-
-pub struct Sonnet4_6 {
-    pub sampling: Sonnet4_6Sampling,
-    pub effort: Sonnet4_6Effort,
-}
-
-impl Default for Sonnet4_6 {
-    fn default() -> Self {
-        Self { sampling: Sonnet4_6Sampling::Temperature(Temperature::default()), effort: Sonnet4_6Effort::High }
-    }
-}
-
-impl Sonnet4_6 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_effort(mut self, effort: Sonnet4_6Effort) -> Self {
-        self.effort = effort;
-        self
-    }
-    pub fn with_temperature(mut self, t: Temperature) -> Self {
-        self.sampling = Sonnet4_6Sampling::Temperature(t);
-        self
-    }
-
-    /// Enable adaptive thinking. Overrides any previously-set temperature
-    /// (API pins it to 1.0 internally under adaptive).
-    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        self.sampling = Sonnet4_6Sampling::Adaptive { display };
-        self
-    }
-}
-
-pub enum Sonnet4_6Sampling {
-    /// `Temperature::default()` (1.0) matches the API default when `temperature` is omitted.
-    Temperature(Temperature),
-    Adaptive {
-        display: ThinkingDisplay,
-    },
-}
-
-api_enum! { Sonnet4_6Effort {
-    Low => "low", Medium => "medium", High => "high", Max => "max",
-}}
-
-// ── Haiku 4.5 ────────────────────────────────────────────────────────────────
-// Temperature + legacy fixed-budget thinking. `output_config.effort` rejected
-// (400); adaptive thinking rejected (400).
-
-pub struct Haiku4_5 {
-    pub temperature: Temperature,
-    pub thinking: Haiku4_5Thinking,
-}
-
-impl Default for Haiku4_5 {
-    fn default() -> Self {
-        Self { temperature: Temperature::default(), thinking: Haiku4_5Thinking::Off }
-    }
-}
-
-impl Haiku4_5 {
-    pub fn new() -> Self {
-        Self::default()
-    }
-    pub fn with_temperature(mut self, t: Temperature) -> Self {
-        self.temperature = t;
-        self
-    }
-
-    /// Enable legacy fixed-budget thinking. Haiku 4.5 accepts the legacy
-    /// `{type: "enabled", budget_tokens: N}` form; adaptive thinking is rejected.
-    /// `budget_tokens` must be below the request's `max_tokens` — `Request::new`
-    /// enforces this and returns `RequestError` otherwise.
-    pub fn with_thinking(mut self, budget_tokens: u32) -> Self {
-        self.thinking = Haiku4_5Thinking::Enabled { budget_tokens };
-        self
-    }
-
-    pub fn with_thinking_off(mut self) -> Self {
-        self.thinking = Haiku4_5Thinking::Off;
-        self
-    }
-}
-
-pub enum Haiku4_5Thinking {
-    /// `thinking` field omitted from the request.
-    Off,
-    /// Legacy fixed-budget thinking: `{type: "enabled", budget_tokens: N}`.
-    Enabled { budget_tokens: u32 },
-}
+// The model types were part of this module before they outgrew it. Named
+// explicitly rather than glob-imported so `anthropic::request::Model` keeps
+// meaning what it always did without shadowing this module's own wire structs.
+// The canonical home is [`crate::model`].
+pub use crate::model::{
+    Fable5, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5,
+    Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling,
+    Sonnet5, Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
+};
 
 // ── Request ──────────────────────────────────────────────────────────────────
 
@@ -625,10 +43,20 @@ pub enum RequestError {
     /// Legacy fixed-budget thinking requires `budget_tokens < max_tokens`; the
     /// API rejects `budget_tokens >= max_tokens` with a 400. Only reachable on
     /// Haiku 4.5 via `with_thinking` — adaptive-thinking models carry no budget.
-    ThinkingBudgetExceedsMaxTokens { budget_tokens: u32, max_tokens: u32 },
+    ThinkingBudgetExceedsMaxTokens {
+        /// The budget asked for.
+        budget_tokens: u32,
+        /// The output budget it had to stay below.
+        max_tokens: u32,
+    },
     /// `max_tokens` must fall within `1..=ModelId::max_output_tokens()`. The API
     /// rejects 0 and any value above the model's synchronous max output with a 400.
-    MaxTokensOutOfRange { max_tokens: u32, max_output: u32 },
+    MaxTokensOutOfRange {
+        /// The value asked for.
+        max_tokens: u32,
+        /// The model's maximum synchronous output.
+        max_output: u32,
+    },
 }
 
 impl std::fmt::Display for RequestError {
@@ -648,10 +76,31 @@ impl std::error::Error for RequestError {}
 
 /// Borrowed `Context` + per-call params. Serializes to `POST /v1/messages`.
 pub struct Request<'a> {
+    /// The conversation state this call is made against.
     pub context: &'a Context,
+    /// Which model answers, with its per-call parameters.
     pub model: Model,
+    /// The output-token budget, checked against the model's maximum by
+    /// [`Request::new`].
     pub max_tokens: u32,
+    /// Sequences whose appearance ends generation, reported back as
+    /// [`crate::values::StopReason::StopSequence`].
     pub stop_sequences: Vec<String>,
+    /// Whether to ask for Server-Sent Events instead of one response body.
+    ///
+    /// A per-call decision, not a property of the conversation: the same
+    /// `Context` may be streamed on one turn and not the next, and the request
+    /// body is otherwise identical. Decode the events with
+    /// [`crate::stream::StreamEvent`] and accumulate them with
+    /// [`crate::settle::Settling`]; decode the single body with
+    /// [`crate::response::Response`].
+    pub stream: bool,
+    /// Whether, and which, tool the model must call. `None` leaves the field off
+    /// the wire, which the API reads as `auto`.
+    ///
+    /// Changing this between turns invalidates the *message* cache and leaves the
+    /// tools and system caches valid — see [`ToolChoice`], which documents why.
+    pub tool_choice: Option<ToolChoice>,
 }
 
 impl<'a> Request<'a> {
@@ -671,11 +120,26 @@ impl<'a> Request<'a> {
         {
             return Err(RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens });
         }
-        Ok(Self { context, model, max_tokens, stop_sequences: Vec::new() })
+        Ok(Self { context, model, max_tokens, stop_sequences: Vec::new(), stream: false, tool_choice: None })
     }
 
+    /// Sequences whose appearance ends generation.
     pub fn stop_sequences(mut self, seqs: Vec<String>) -> Self {
         self.stop_sequences = seqs;
+        self
+    }
+
+    /// Asks for the response as Server-Sent Events.
+    pub fn streamed(mut self) -> Self {
+        self.stream = true;
+        self
+    }
+
+    /// Constrains which tool the model may or must call.
+    ///
+    /// Invalidates the message cache on change; see [`ToolChoice`].
+    pub fn tool_choice(mut self, choice: ToolChoice) -> Self {
+        self.tool_choice = Some(choice);
         self
     }
 }
@@ -686,11 +150,14 @@ impl<'a> Request<'a> {
 /// the endpoint ignores sampling/thinking/effort, so exposing them here would
 /// let callers set values the wire payload silently drops (violates §5).
 pub struct CountRequest<'a> {
+    /// The conversation state to count.
     pub context: &'a Context,
+    /// Which model's tokenizer counts it.
     pub model: ModelId,
 }
 
 impl<'a> CountRequest<'a> {
+    /// A token-count request for this conversation and model.
     pub fn new(context: &'a Context, model: ModelId) -> Self {
         Self { context, model }
     }
@@ -738,6 +205,11 @@ struct OutputConfig {
 struct RequestWire<'a> {
     model: &'static str,
     max_tokens: u32,
+    // Emitted only when streaming was asked for: the API reads an absent field
+    // as `false`, and this is a transport choice the model never sees, so it is
+    // outside §5's "the body is a complete record of what the model sees".
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -751,6 +223,11 @@ struct RequestWire<'a> {
     messages: &'a Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig>,
+    // Absent means `auto`, the documented default. Omitting rather than
+    // defaulting keeps the message-cache key identical to a request that never
+    // mentioned the field — see `ToolChoice`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'a ToolChoice>,
 }
 
 impl Serialize for Request<'_> {
@@ -816,6 +293,7 @@ impl Serialize for Request<'_> {
         RequestWire {
             model: self.model.api_id(),
             max_tokens: self.max_tokens,
+            stream: self.stream,
             temperature,
             thinking,
             output_config,
@@ -823,6 +301,7 @@ impl Serialize for Request<'_> {
             system: self.context.system.as_ref(),
             tools: &self.context.tools,
             messages: &self.context.messages,
+            tool_choice: self.tool_choice.as_ref(),
         }
         .serialize(s)
     }
@@ -853,6 +332,7 @@ impl Serialize for CountRequest<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ThinkingDisplay;
     use serde_json::Value;
 
     fn req(m: impl Into<Model>) -> Value {
