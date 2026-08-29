@@ -285,7 +285,7 @@ fn live_ok_sonnet_5_stop_sequence() {
     let key = key_or_skip!();
     let ctx = user_ctx("List the numbers 1 through 9 separated by single spaces, nothing else.");
     let model = Model::sonnet_5().with_thinking_off();
-    let req = Request::new(&ctx, model, 64).unwrap().stop_sequences(vec!["5".into()]);
+    let req = Request::new(&ctx, model, 64).unwrap().with_stop_sequences(vec!["5".into()]);
     let (code, body) = post(MESSAGES_PATH, &req, &key);
     assert_ok(code, &body);
     assert_eq!(body["stop_reason"], "stop_sequence", "body: {body}");

@@ -1,5 +1,117 @@
 # Changelog
 
+## 0.3.0
+
+Wire vocabulary is typed everywhere, not just in the places a caller was expected
+to go through. `Message.role` was a `pub role: &'static str` whose doc comment
+claimed an unknown role could not reach the wire; it could, because a public
+string field accepts any string. The same defect appeared in five other places.
+This release replaces every "held by a private constructor or a doc comment" with
+"held by the type".
+
+### Breaking: `Message::role` is a `Role`
+
+- `values::Role` is a new enum with exactly the two roles a `messages[]` entry may
+  carry: `Role::User` (`"user"`) and `Role::Assistant` (`"assistant"`). It is
+  re-exported at the crate root, has `as_str`/`from_str` like the other wire
+  enums, and serializes to its wire string.
+- `context::Message::role` is now `Role` instead of `&'static str`. The field
+  stays public, because a closed enum has no invalid value to write — which is
+  what makes the impossibility structural rather than documentary. A
+  `compile_fail` doctest on the `context` module proves both halves: neither a
+  nonexistent variant nor a bare `"wizard"` compiles.
+- **Migration.** Matching or comparing a role: `msg.role == "user"` becomes
+  `msg.role == Role::User`, and `match msg.role { "user" => … }` becomes
+  `match msg.role { Role::User => … }`. Needing the string: `msg.role` becomes
+  `msg.role.as_str()`. Constructing a `Message` literal: `role: "assistant"`
+  becomes `role: Role::Assistant`. The `push_user*`/`push_assistant*`/
+  `push_tool_result` methods are unchanged and remain the ordinary path.
+- `Role` has no `System` variant, deliberately. Anthropic does accept a
+  `{"role": "system"}` entry inside `messages[]` — the gateway lists it among
+  accepted block types as `mid_conv_system` — but only on some models, and only
+  under placement rules the API enforces with a 400: it may not be first, must
+  follow a user turn or an assistant turn ending in a server tool use, must be
+  last or be followed by an assistant turn, and may not be adjacent to another
+  one. A `Role::System` this crate cannot place correctly would make those
+  rejections *writable*, which inverts the enum's purpose. Support remains the
+  separate work CLAUDE.md §7 describes: a `push_system` that upholds the
+  placement rules, plus a shared system-content type and a cache-slot position
+  for it.
+
+### Breaking: `Request` and `CountRequest` fields are private, with readers
+
+`Request::new` documented itself as "the single construction path, so the checks
+can't be bypassed", while `pub model` and `pub max_tokens` let a caller assign
+straight past them. `max_tokens` must lie in `1..=` *this model's* maximum output
+and Haiku 4.5's legacy thinking budget must stay below it — cross-field
+invariants no single type carries, so the constructor must be the only way in.
+
+- `Request` fields are private. Readers: `context()`, `model()`, `max_tokens()`,
+  `stop_sequences()`, `is_streamed()`, `tool_choice()`.
+- The two builders that collided with those reader names are renamed to the
+  crate's `with_*` idiom: `stop_sequences(v)` → `with_stop_sequences(v)` and
+  `tool_choice(c)` → `with_tool_choice(c)`. `streamed()` is unchanged.
+- `CountRequest` fields are private, with `context()` and `model()` readers.
+- **Migration.** Reading: `req.max_tokens` becomes `req.max_tokens()`, and
+  likewise for the others. Building: `.stop_sequences(v)` becomes
+  `.with_stop_sequences(v)`, `.tool_choice(c)` becomes `.with_tool_choice(c)`.
+  Writing a field after construction was never sound and is now impossible;
+  build a new `Request` instead.
+
+### Breaking: `YearMonth` is a year plus a `Month`
+
+`pub month: u8` documented as "1 through 12" was a range nothing enforced.
+
+- `model::Month` is a new twelve-variant enum, so there is no invalid month to
+  construct and nothing to validate. `Month::ALL` is calendar order and
+  `Month::from_number` maps an ordinal back, `None` outside `1..=12`.
+- `YearMonth` has private fields with `year()`, `month()`, and `month_number()`
+  readers, and `YearMonth::new(year, month)`. It now derives `Ord`: the fields are
+  declared most-significant first, so the lexicographic order Rust derives *is*
+  chronological order, and two cutoffs compare with `<` directly.
+- **Migration.** `cutoff.year` becomes `cutoff.year()`, and `cutoff.month`
+  becomes `cutoff.month_number()` for the integer or `cutoff.month()` for the
+  enum. `YearMonth { year: 2026, month: 1 }` becomes
+  `YearMonth::new(2026, Month::January)`.
+
+### Breaking: `ImageSource::Base64::media_type` is an `ImageMediaType`
+
+The variant's field was a `&'static str` that only `ImageMediaType::as_str` ever
+filled, so an unsupported media type was writable by hand. It now holds the enum.
+`ImageSource::base64(ImageMediaType::Png, data)` is unchanged; only the field's
+type changed, which matters when matching on the variant.
+
+### Every API enum serializes to its own wire string
+
+`api_enum!` now generates `Serialize` alongside `as_str`, so a wire struct holds
+the enum rather than a string obtained from it. This removed the last four
+internal `&'static str` wire fields: `CacheControl.kind`/`.ttl`, the private
+thinking-config `type` fields, and the system prompt's text-block `type` (now the
+new one-variant `values::TextBlockType`). The bytes on the wire are unchanged.
+
+### Audited and left open, with reasons
+
+- `usage::Usage`, `usage::CacheCreation`, `usage::OutputTokensDetails`,
+  `response::Response`, `response::ApiError`, `stream::MessageStart`,
+  `stream::MessageDelta`, `stream::StreamedError` — decoded inbound records whose
+  fields are plain counters and strings the server chose. Every `u64` is a valid
+  count and every `String` a valid identifier, so there is no invalid value to
+  exclude. `Usage::cache_creation_is_consistent` reports a server-side
+  inconsistency rather than refusing it, which §6 requires.
+- `model::Pricing` — two `u32` cent amounts, both meaningful at any value. Its
+  caveats are about which price list it reflects, which no type can settle.
+- `settle::Settled` stays `#[non_exhaustive]` with public fields: the invariant is
+  "this came from a finished stream", which the missing struct literal already
+  enforces, and reading the fields is the point of holding one.
+- `settle::ToolCall`, `context::Tool`, `context::TextBlock` and the other outbound
+  block structs — public fields are free-form content by nature (a tool name, a
+  schema, some text). Their one constrained field, `cache_control`, is already
+  crate-private and reachable only through a `CacheSlot`.
+- `content::ToolInput` keeps a private `String` and a `from_wire` constructor. The
+  bytes are deliberately unvalidated: `input_json_delta` sends partial JSON, so
+  "not yet parseable" is a normal intermediate state and `decode` is where it
+  becomes a failure.
+
 ## 0.2.0
 
 The response half of the wire. The crate decoded nothing before this release; a

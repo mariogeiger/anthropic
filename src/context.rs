@@ -16,8 +16,28 @@
 //! breakpoint is through `CacheSlot` via `with_system_cached`,
 //! `with_tools_cached`, or `roll_cache`, which keeps slot bookkeeping
 //! consistent with content.
+//!
+//! Every wire value drawn from a closed API vocabulary is the matching enum from
+//! [`crate::values`], never the string it serializes to. A `&'static str` field is
+//! writable with any string; an enum field is writable only with a value the API
+//! accepts. That is why [`Message::role`] is a [`Role`] and why an unwritable
+//! invalid role is a property of the type:
+//!
+//! ```compile_fail
+//! use anthropic::context::{ContentBlock, Message};
+//!
+//! // No such role exists to name, so this does not compile.
+//! let _ = Message { role: anthropic::Role::Wizard, content: vec![] };
+//! ```
+//!
+//! ```compile_fail
+//! use anthropic::context::{ContentBlock, Message};
+//!
+//! // Nor can the wire string be written directly: the field is not a string.
+//! let _ = Message { role: "wizard", content: Vec::<ContentBlock>::new() };
+//! ```
 
-use crate::{CacheControlType, CacheTtl, ImageMediaType};
+use crate::{CacheControlType, CacheTtl, ImageMediaType, Role, TextBlockType};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -31,13 +51,13 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
-    pub(crate) kind: &'static str,
-    pub(crate) ttl: &'static str,
+    pub(crate) kind: CacheControlType,
+    pub(crate) ttl: CacheTtl,
 }
 
 impl CacheControl {
     pub(crate) fn ephemeral(ttl: CacheTtl) -> Self {
-        Self { kind: CacheControlType::Ephemeral.as_str(), ttl: ttl.as_str() }
+        Self { kind: CacheControlType::Ephemeral, ttl }
     }
 }
 
@@ -88,8 +108,9 @@ struct SlotState {
 pub enum ImageSource {
     /// Bytes inline, base64-encoded.
     Base64 {
-        /// The image's media type.
-        media_type: &'static str,
+        /// The image's media type. The enum, not the string it serializes to, so
+        /// a format the API does not accept cannot be named.
+        media_type: ImageMediaType,
         /// The base64 payload.
         data: String,
     },
@@ -108,7 +129,7 @@ pub enum ImageSource {
 impl ImageSource {
     /// Inline base64 bytes of the given media type.
     pub fn base64(media_type: ImageMediaType, data: impl Into<String>) -> Self {
-        ImageSource::Base64 { media_type: media_type.as_str(), data: data.into() }
+        ImageSource::Base64 { media_type, data: data.into() }
     }
     /// A URL for the API to fetch.
     pub fn url(url: impl Into<String>) -> Self {
@@ -293,11 +314,18 @@ impl ContentBlock {
 // ── Messages, tools, system ──────────────────────────────────────────────────
 
 /// One turn of the conversation.
+///
+/// Public fields, because both of them are already exact: [`Role`] has no invalid
+/// value to write, and any block sequence is a legal `content` array. Readers plus
+/// constructors would hide nothing the compiler is not already checking, and they
+/// would cost the pattern matching a caller wants when replaying history. What is
+/// *not* public is `cache_control` on the blocks inside — that one carries a
+/// cross-message invariant, so it stays crate-private and reachable only through a
+/// [`CacheSlot`].
 #[derive(Debug, Clone, Serialize)]
 pub struct Message {
-    /// `"user"` or `"assistant"`. Set by the `push_*` methods, never by hand, so
-    /// an unknown role cannot reach the wire.
-    pub role: &'static str,
+    /// Whose turn it is.
+    pub role: Role,
     /// The turn's content blocks.
     pub content: Vec<ContentBlock>,
 }
@@ -344,7 +372,7 @@ pub(crate) struct SystemPrompt {
 #[derive(Serialize)]
 struct SystemTextBlockRef<'a> {
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: TextBlockType,
     text: &'a str,
     cache_control: &'a CacheControl,
 }
@@ -353,7 +381,9 @@ impl Serialize for SystemPrompt {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match &self.cache_control {
             None => self.text.serialize(s),
-            Some(cc) => [SystemTextBlockRef { kind: "text", text: &self.text, cache_control: cc }].serialize(s),
+            Some(cc) => {
+                [SystemTextBlockRef { kind: TextBlockType::Text, text: &self.text, cache_control: cc }].serialize(s)
+            }
         }
     }
 }
@@ -480,28 +510,28 @@ impl Context {
 
     // ── Append-only evolution ───────────────────────────────────────────────
 
-    fn push(&mut self, role: &'static str, content: Vec<ContentBlock>) {
+    fn push(&mut self, role: Role, content: Vec<ContentBlock>) {
         self.messages.push(Message { role, content });
     }
     /// Appends a user turn.
     pub fn push_user(&mut self, blocks: Vec<ContentBlock>) {
-        self.push("user", blocks);
+        self.push(Role::User, blocks);
     }
     /// Appends an assistant turn — the model's own reply, replayed.
     pub fn push_assistant(&mut self, blocks: Vec<ContentBlock>) {
-        self.push("assistant", blocks);
+        self.push(Role::Assistant, blocks);
     }
     /// Appends a user turn of one text block.
     pub fn push_user_text(&mut self, text: impl Into<String>) {
-        self.push("user", vec![ContentBlock::text(text)]);
+        self.push(Role::User, vec![ContentBlock::text(text)]);
     }
     /// Appends an assistant turn of one text block.
     pub fn push_assistant_text(&mut self, text: impl Into<String>) {
-        self.push("assistant", vec![ContentBlock::text(text)]);
+        self.push(Role::Assistant, vec![ContentBlock::text(text)]);
     }
     /// Appends a tool result as a user turn, which is where the API expects one.
     pub fn push_tool_result(&mut self, tool_use_id: impl Into<String>, content: ToolResultContent) {
-        self.push("user", vec![ContentBlock::tool_result(tool_use_id, content)]);
+        self.push(Role::User, vec![ContentBlock::tool_result(tool_use_id, content)]);
     }
 
     // ── Cache slot ops ──────────────────────────────────────────────────────
@@ -754,6 +784,35 @@ mod tests {
         assert_eq!(v["system"][0]["type"], "text");
         assert_eq!(v["system"][0]["text"], "sys");
         assert_eq!(v["system"][0]["cache_control"]["ttl"], "1h");
+    }
+
+    #[test]
+    fn roles_reach_the_wire_as_their_strings() {
+        let mut ctx = Context::new();
+        ctx.push_user_text("one");
+        ctx.push_assistant_text("two");
+        ctx.push_tool_result("tu_1", ToolResultContent::Text("three".into()));
+        let v = req(&ctx);
+        assert_eq!(v["messages"][0]["role"], "user");
+        assert_eq!(v["messages"][1]["role"], "assistant");
+        // A tool result is a user turn, which is where the API expects one.
+        assert_eq!(v["messages"][2]["role"], "user");
+        // The typed field and the wire string are the same value in two forms.
+        assert_eq!(ctx.messages[0].role, Role::User);
+        assert_eq!(ctx.messages[1].role, Role::Assistant);
+        assert_eq!(Role::User.as_str(), "user");
+        assert_eq!(Role::Assistant.as_str(), "assistant");
+        // `system` is not a role this crate can name; see the `Role` docs.
+        assert_eq!(Role::from_str("system"), None);
+    }
+
+    #[test]
+    fn image_media_type_serializes_from_the_enum() {
+        let mut ctx = Context::new();
+        ctx.push_user(vec![ContentBlock::image(ImageSource::base64(ImageMediaType::Png, "aGk="))]);
+        let v = req(&ctx);
+        assert_eq!(v["messages"][0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(v["messages"][0]["content"][0]["source"]["type"], "base64");
     }
 
     #[test]

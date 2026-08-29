@@ -13,6 +13,8 @@ Currently modeled: `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude
 - **A silent cache failure cannot hide.** A cached prefix below the model's minimum caches nothing and returns no error. `Usage::cache_hit_rate` is how you notice. Merging usage across frames is a pointwise maximum, so a later frame that reports fewer fields cannot zero the cache counts an earlier one gave you.
 - **A stop reason cannot be mistaken for the end of a stream.** `message_delta` carries `stop_reason` but is not terminal; only `message_stop` and `error` are. A stream cut off in between fails to settle and says the stop reason had already arrived.
 - **A parameter a model rejects does not exist on that model's type.** Sonnet 4.6 has no `xhigh` effort; Opus 5 with thinking off has no `xhigh` or `max`; Haiku 4.5 has no effort at all.
+- **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. `Message.role` is a `Role` of exactly `User` and `Assistant`; a month is one of twelve variants, not a `u8` documented as 1–12.
+- **A checked constructor cannot be bypassed.** `Request` and `CountRequest` hold private fields behind readers, so `max_tokens` cannot be reassigned past the range check `Request::new` runs against the model's maximum.
 
 ## Sending a request
 

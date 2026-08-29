@@ -20,7 +20,7 @@
 
 use crate::context::{Context, Message, SystemPrompt, Tool};
 use crate::tool_choice::ToolChoice;
-use crate::values::ThinkingType;
+use crate::values::{ThinkingDisplay, ThinkingType};
 use serde::Serialize;
 
 // The model types were part of this module before they outgrew it. Named
@@ -28,8 +28,8 @@ use serde::Serialize;
 // meaning what it always did without shadowing this module's own wire structs.
 // The canonical home is [`crate::model`].
 pub use crate::model::{
-    Fable5, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5,
-    Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling,
+    Fable5, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking,
+    Opus5, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling,
     Sonnet5, Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
 };
 
@@ -74,40 +74,30 @@ impl std::fmt::Display for RequestError {
 
 impl std::error::Error for RequestError {}
 
-/// Borrowed `Context` + per-call params. Serializes to `POST /v1/messages`.
+/// Borrowed [`Context`] + per-call params. Serializes to `POST /v1/messages`.
+///
+/// Private fields with readers, not public fields, and for one reason:
+/// `max_tokens` and `model` are bound by a cross-field invariant that no single
+/// type can carry. `max_tokens` must lie in `1..=` *this model's* maximum output,
+/// and Haiku 4.5's legacy thinking budget must stay below it. [`Request::new`]
+/// checks both, so it must be the only way in — a public field would let a caller
+/// assign around the check and get the 400 the check exists to prevent. The
+/// builders below only move between states that stay valid.
 pub struct Request<'a> {
-    /// The conversation state this call is made against.
-    pub context: &'a Context,
-    /// Which model answers, with its per-call parameters.
-    pub model: Model,
-    /// The output-token budget, checked against the model's maximum by
-    /// [`Request::new`].
-    pub max_tokens: u32,
-    /// Sequences whose appearance ends generation, reported back as
-    /// [`crate::values::StopReason::StopSequence`].
-    pub stop_sequences: Vec<String>,
-    /// Whether to ask for Server-Sent Events instead of one response body.
-    ///
-    /// A per-call decision, not a property of the conversation: the same
-    /// `Context` may be streamed on one turn and not the next, and the request
-    /// body is otherwise identical. Decode the events with
-    /// [`crate::stream::StreamEvent`] and accumulate them with
-    /// [`crate::settle::Settling`]; decode the single body with
-    /// [`crate::response::Response`].
-    pub stream: bool,
-    /// Whether, and which, tool the model must call. `None` leaves the field off
-    /// the wire, which the API reads as `auto`.
-    ///
-    /// Changing this between turns invalidates the *message* cache and leaves the
-    /// tools and system caches valid — see [`ToolChoice`], which documents why.
-    pub tool_choice: Option<ToolChoice>,
+    context: &'a Context,
+    model: Model,
+    max_tokens: u32,
+    stop_sequences: Vec<String>,
+    stream: bool,
+    tool_choice: Option<ToolChoice>,
 }
 
 impl<'a> Request<'a> {
-    /// `new` is the single construction path, so the checks can't be bypassed.
-    /// It validates the invariants the type system can't express: `max_tokens`
-    /// must fall within `1..=` the model's max output, and legacy `budget_tokens`
-    /// (Haiku 4.5 only) must be below `max_tokens`.
+    /// `new` is the only construction path, which is what makes the checks
+    /// unbypassable rather than merely conventional. It validates the invariants
+    /// no single type can express: `max_tokens` must fall within `1..=` the
+    /// model's max output, and legacy `budget_tokens` (Haiku 4.5 only) must be
+    /// below `max_tokens`.
     pub fn new(context: &'a Context, model: impl Into<Model>, max_tokens: u32) -> Result<Self, RequestError> {
         let model = model.into();
         let max_output = model.id().max_output_tokens();
@@ -123,43 +113,94 @@ impl<'a> Request<'a> {
         Ok(Self { context, model, max_tokens, stop_sequences: Vec::new(), stream: false, tool_choice: None })
     }
 
-    /// Sequences whose appearance ends generation.
-    pub fn stop_sequences(mut self, seqs: Vec<String>) -> Self {
+    /// The conversation state this call is made against.
+    pub fn context(&self) -> &'a Context {
+        self.context
+    }
+
+    /// Which model answers, with its per-call parameters.
+    pub fn model(&self) -> &Model {
+        &self.model
+    }
+
+    /// The output-token budget, already checked against the model's maximum.
+    pub fn max_tokens(&self) -> u32 {
+        self.max_tokens
+    }
+
+    /// Ends generation when any of these sequences appears, reported back as
+    /// [`crate::values::StopReason::StopSequence`].
+    pub fn with_stop_sequences(mut self, seqs: Vec<String>) -> Self {
         self.stop_sequences = seqs;
         self
     }
 
+    /// The sequences whose appearance ends generation.
+    pub fn stop_sequences(&self) -> &[String] {
+        &self.stop_sequences
+    }
+
     /// Asks for the response as Server-Sent Events.
+    ///
+    /// A per-call decision, not a property of the conversation: the same
+    /// [`Context`] may be streamed on one turn and not the next, and the request
+    /// body is otherwise identical. Decode the events with
+    /// [`crate::stream::StreamEvent`] and accumulate them with
+    /// [`crate::settle::Settling`]; decode the single body with
+    /// [`crate::response::Response`].
     pub fn streamed(mut self) -> Self {
         self.stream = true;
         self
     }
 
+    /// Whether Server-Sent Events were asked for.
+    pub fn is_streamed(&self) -> bool {
+        self.stream
+    }
+
     /// Constrains which tool the model may or must call.
     ///
     /// Invalidates the message cache on change; see [`ToolChoice`].
-    pub fn tool_choice(mut self, choice: ToolChoice) -> Self {
+    pub fn with_tool_choice(mut self, choice: ToolChoice) -> Self {
         self.tool_choice = Some(choice);
         self
+    }
+
+    /// Whether, and which, tool the model must call. `None` leaves the field off
+    /// the wire, which the API reads as `auto`.
+    pub fn tool_choice(&self) -> Option<&ToolChoice> {
+        self.tool_choice.as_ref()
     }
 }
 
 // ── CountRequest ─────────────────────────────────────────────────────────────
 
-/// Request body for `POST /v1/messages/count_tokens`. Takes only a `ModelId`:
+/// Request body for `POST /v1/messages/count_tokens`. Takes only a [`ModelId`]:
 /// the endpoint ignores sampling/thinking/effort, so exposing them here would
 /// let callers set values the wire payload silently drops (violates §5).
+///
+/// Private fields with readers, matching [`Request`]: this endpoint's body is
+/// fixed at construction and there is nothing to reassign afterwards, so a
+/// settable field would only offer a way to build a body no constructor would.
 pub struct CountRequest<'a> {
-    /// The conversation state to count.
-    pub context: &'a Context,
-    /// Which model's tokenizer counts it.
-    pub model: ModelId,
+    context: &'a Context,
+    model: ModelId,
 }
 
 impl<'a> CountRequest<'a> {
     /// A token-count request for this conversation and model.
     pub fn new(context: &'a Context, model: ModelId) -> Self {
         Self { context, model }
+    }
+
+    /// The conversation state to count.
+    pub fn context(&self) -> &'a Context {
+        self.context
+    }
+
+    /// Which model's tokenizer counts it.
+    pub fn model(&self) -> ModelId {
+        self.model
     }
 }
 
@@ -170,22 +211,22 @@ impl<'a> CountRequest<'a> {
 #[derive(Serialize)]
 struct AdaptiveThinking {
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: ThinkingType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    display: Option<&'static str>,
+    display: Option<ThinkingDisplay>,
 }
 
 #[derive(Serialize)]
 struct EnabledThinking {
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: ThinkingType,
     budget_tokens: u32,
 }
 
 #[derive(Serialize)]
 struct DisabledThinking {
     #[serde(rename = "type")]
-    kind: &'static str,
+    kind: ThinkingType,
 }
 
 #[derive(Serialize)]
@@ -198,6 +239,9 @@ enum ThinkingWire {
 
 #[derive(Serialize)]
 struct OutputConfig {
+    // A `&'static str` rather than a per-model effort enum, because there is no
+    // one such enum: each model accepts its own effort set (§2), and this struct
+    // is private, so no caller can write the field at all.
     effort: &'static str,
 }
 
@@ -232,26 +276,24 @@ struct RequestWire<'a> {
 
 impl Serialize for Request<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let adaptive =
-            |display| ThinkingWire::Adaptive(AdaptiveThinking { kind: ThinkingType::Adaptive.as_str(), display });
-        let enabled = |budget_tokens| {
-            ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled.as_str(), budget_tokens })
-        };
+        let adaptive = |display| ThinkingWire::Adaptive(AdaptiveThinking { kind: ThinkingType::Adaptive, display });
+        let enabled =
+            |budget_tokens| ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled, budget_tokens });
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
             // Thinking is always on — always emit the adaptive block (§5: the
             // request is a complete record of what the model sees).
-            Model::Fable5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
+            Model::Fable5(p) => (None, Some(adaptive(Some(p.display))), effort(p.effort.as_str())),
             // Adaptive thinking is always emitted explicitly; "off" is the explicit
             // disabled block, not an omitted field (§5). No sampling: `temperature`
             // is rejected as deprecated on this model.
             Model::Opus5(p) => match &p.thinking {
                 Opus5Thinking::Adaptive { display, effort: e } => {
-                    (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
+                    (None, Some(adaptive(Some(*display))), effort(e.as_str()))
                 }
                 Opus5Thinking::Disabled { effort: e } => (
                     None,
-                    Some(ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })),
+                    Some(ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled })),
                     effort(e.as_str()),
                 ),
             },
@@ -259,7 +301,7 @@ impl Serialize for Request<'_> {
                 None,
                 match &p.thinking {
                     Opus4_8Thinking::Off => None,
-                    Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
+                    Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(*display))),
                 },
                 effort(p.effort.as_str()),
             ),
@@ -268,9 +310,9 @@ impl Serialize for Request<'_> {
             Model::Sonnet5(p) => (
                 None,
                 Some(match &p.thinking {
-                    Sonnet5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
+                    Sonnet5Thinking::Adaptive { display } => adaptive(Some(*display)),
                     Sonnet5Thinking::Disabled => {
-                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled.as_str() })
+                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled })
                     }
                 }),
                 effort(p.effort.as_str()),
@@ -278,7 +320,7 @@ impl Serialize for Request<'_> {
             Model::Sonnet4_6(p) => {
                 let (t, th) = match p.sampling {
                     Sonnet4_6Sampling::Temperature(t) => (Some(t.get()), None),
-                    Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display.as_str())))),
+                    Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display)))),
                 };
                 (t, th, effort(p.effort.as_str()))
             }
@@ -468,10 +510,10 @@ mod tests {
         assert_eq!(ModelId::Haiku4_5.context_window_tokens(), 200_000);
         assert_eq!(ModelId::Sonnet5.max_output_tokens(), 128_000);
         assert_eq!(ModelId::Haiku4_5.max_output_tokens(), 64_000);
-        assert_eq!(ModelId::Sonnet5.knowledge_cutoff(), YearMonth { year: 2026, month: 1 });
-        assert_eq!(ModelId::Sonnet4_6.knowledge_cutoff(), YearMonth { year: 2025, month: 8 });
-        assert_eq!(ModelId::Sonnet4_6.training_cutoff(), YearMonth { year: 2026, month: 1 });
-        assert_eq!(ModelId::Haiku4_5.training_cutoff(), YearMonth { year: 2025, month: 7 });
+        assert_eq!(ModelId::Sonnet5.knowledge_cutoff(), YearMonth::new(2026, Month::January));
+        assert_eq!(ModelId::Sonnet4_6.knowledge_cutoff(), YearMonth::new(2025, Month::August));
+        assert_eq!(ModelId::Sonnet4_6.training_cutoff(), YearMonth::new(2026, Month::January));
+        assert_eq!(ModelId::Haiku4_5.training_cutoff(), YearMonth::new(2025, Month::July));
         assert_eq!(
             ModelId::Opus4_8.price_per_mtok(),
             Pricing { input_cents_per_mtok: 500, output_cents_per_mtok: 2_500 }
@@ -480,6 +522,25 @@ mod tests {
             ModelId::Haiku4_5.price_per_mtok(),
             Pricing { input_cents_per_mtok: 100, output_cents_per_mtok: 500 }
         );
+    }
+
+    #[test]
+    fn a_year_month_is_ordered_chronologically_and_names_its_month() {
+        let jan_2026 = YearMonth::new(2026, Month::January);
+        assert_eq!(jan_2026.year(), 2026);
+        assert_eq!(jan_2026.month(), Month::January);
+        assert_eq!(jan_2026.month_number(), 1);
+        assert_eq!(YearMonth::new(2025, Month::December).month_number(), 12);
+        // Declaration order is calendar order, so the derived `Ord` is chronological.
+        assert!(YearMonth::new(2025, Month::December) < jan_2026);
+        assert!(YearMonth::new(2026, Month::February) > jan_2026);
+        assert!(ModelId::Haiku4_5.knowledge_cutoff() < ModelId::Opus5.knowledge_cutoff());
+        // Ordinals round-trip; anything outside 1..=12 names no month.
+        for m in Month::ALL {
+            assert_eq!(Month::from_number(YearMonth::new(2026, m).month_number()), Some(m));
+        }
+        assert_eq!(Month::from_number(0), None);
+        assert_eq!(Month::from_number(13), None);
     }
 
     #[test]
@@ -615,7 +676,7 @@ mod tests {
     fn stop_sequences_roundtrip() {
         let ctx = Context::new();
         let v = serde_json::to_value(
-            Request::new(&ctx, Model::opus_4_8(), 1024).unwrap().stop_sequences(vec!["STOP".into(), "END".into()]),
+            Request::new(&ctx, Model::opus_4_8(), 1024).unwrap().with_stop_sequences(vec!["STOP".into(), "END".into()]),
         )
         .unwrap();
         assert_eq!(v["stop_sequences"][0], "STOP");

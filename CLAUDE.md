@@ -22,6 +22,14 @@ Mutually exclusive settings (for example, two sampling modes the server treats a
 
 If a knob is model-specific, it belongs on the model-specific type, not on the shared request type. Adding support for another model means a new model-specific type carrying only its accepted parameters — never widening an existing one.
 
+An invariant is held by the type or it is not held. A doc comment saying a field is "set by" some method, or a private constructor that checks what a public field lets a caller assign around, is a convention the compiler does not know about — and this crate has already shipped exactly that mistake. Two rules follow, and they are not in tension:
+
+*A closed API vocabulary is an enum, never a string.* A `&'static str` field accepts any string; a field of an enum with no invalid variant accepts only what the API does. So the enum goes in the field, and the string comes out of it at serialization time. A public field of such an enum is perfectly safe, and preferable — it keeps pattern matching available for free.
+
+*A cross-field invariant means private fields plus readers.* Where validity is a relation between fields (`max_tokens` against *this model's* maximum, a thinking budget against `max_tokens`), no single field's type can carry it, so the checking constructor must be the only way in and the fields must not be assignable afterwards. Where there is no such relation, do not hide the field: readers that guard nothing cost pattern matching and buy nothing.
+
+The `compile_fail` doctest is how a claim of impossibility gets tested. A claim only a comment makes is the failure mode this section exists to prevent.
+
 ## 3. Model runtime behavior, not HTTP field presence
 
 Types describe what the model actually *sees*, not which JSON fields happen to appear on the wire. Optional fields represent real runtime distinctions — something is present or not, configured or not — never "the field was omitted from the JSON."
@@ -70,7 +78,10 @@ The crate tracks the current Claude tiers. Older models are not wired up by defa
 
 Anthropic supports appending a `{"role": "system"}` message to `messages` on Fable 5, Opus 5, and Opus 4.8, adding an instruction partway through a conversation *without* invalidating the system or message caches — the cached prefix is untouched because nothing before it changed. The gateway accepts it. This crate cannot express it yet, and the obstruction is structural rather than a missing field:
 
-- `Message::role` is set only by the `push_*` methods, so `"system"` is unreachable by design. That guard is worth keeping; the addition is a `push_system` beside the others, not a public `role`.
+- `Message::role` is a `Role` of exactly `User` and `Assistant`, so `"system"` is
+  not a value the type can hold. That guard is worth keeping; the addition is a
+  `push_system` beside the others plus a `Role::System` variant introduced
+  *together* with the placement checks that make it legal, not a public string.
 - The blocker is `SystemPrompt`: system content is one private top-level struct with two wire shapes, so "the system prompt" and "a system message in the history" are different types today. Supporting both means system content becoming a shared block type that either position can hold.
 - Cache slots then need a fourth `SlotLocation`, and `flow_key` a position for it. A mid-conversation system message sits *in* the message sequence, so its flow key belongs with the messages, not with the top-level system anchor — getting that wrong would let TTL-ordering validation pass on a request the API rejects.
 - It is per-model: Sonnet 5 refuses it. Under §2 that makes it a per-model-type capability, not a widening of the shared `Context`.
