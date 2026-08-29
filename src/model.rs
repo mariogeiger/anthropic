@@ -112,12 +112,95 @@ pub struct Pricing {
 }
 
 /// A calendar month, used for documented model cutoff dates (no day granularity).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Readers plus one checked constructor, not public fields, because "the month, 1
+/// through 12" is a claim a `pub month: u8` cannot keep. Ordering is derived and
+/// therefore correct: the fields are declared most-significant first, so the
+/// lexicographic order Rust derives *is* chronological order, and comparing two
+/// cutoffs needs no helper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct YearMonth {
+    year: u16,
+    month: Month,
+}
+
+impl YearMonth {
+    /// A calendar month.
+    pub fn new(year: u16, month: Month) -> Self {
+        Self { year, month }
+    }
+
     /// The year.
-    pub year: u16,
-    /// The month, 1 through 12.
-    pub month: u8,
+    pub fn year(self) -> u16 {
+        self.year
+    }
+
+    /// The month.
+    pub fn month(self) -> Month {
+        self.month
+    }
+
+    /// The month as its ordinal, 1 for January through 12 for December.
+    pub fn month_number(self) -> u8 {
+        self.month as u8 + 1
+    }
+}
+
+/// A month of the year.
+///
+/// Twelve variants rather than a range-checked integer, so there is no invalid
+/// month to construct and no validation to run. Ordering is declaration order,
+/// which is calendar order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Month {
+    /// January.
+    January,
+    /// February.
+    February,
+    /// March.
+    March,
+    /// April.
+    April,
+    /// May.
+    May,
+    /// June.
+    June,
+    /// July.
+    July,
+    /// August.
+    August,
+    /// September.
+    September,
+    /// October.
+    October,
+    /// November.
+    November,
+    /// December.
+    December,
+}
+
+impl Month {
+    /// Every month, in calendar order.
+    pub const ALL: [Month; 12] = [
+        Month::January,
+        Month::February,
+        Month::March,
+        Month::April,
+        Month::May,
+        Month::June,
+        Month::July,
+        Month::August,
+        Month::September,
+        Month::October,
+        Month::November,
+        Month::December,
+    ];
+
+    /// The month an ordinal names, 1 for January through 12 for December, or
+    /// `None` for an ordinal that names no month.
+    pub fn from_number(n: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(n.checked_sub(1)?)).copied()
+    }
 }
 
 impl ModelId {
@@ -181,27 +264,27 @@ impl ModelId {
     /// most extensive and reliable (per the Anthropic models docs).
     pub fn knowledge_cutoff(self) -> YearMonth {
         let (year, month) = match self {
-            ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 5),
-            ModelId::Opus4_8 => (2026, 1),
-            ModelId::Sonnet5 => (2026, 1),
-            ModelId::Sonnet4_6 => (2025, 8),
-            ModelId::Haiku4_5 => (2025, 2),
+            ModelId::Fable5 => (2026, Month::January),
+            ModelId::Opus5 => (2026, Month::May),
+            ModelId::Opus4_8 => (2026, Month::January),
+            ModelId::Sonnet5 => (2026, Month::January),
+            ModelId::Sonnet4_6 => (2025, Month::August),
+            ModelId::Haiku4_5 => (2025, Month::February),
         };
-        YearMonth { year, month }
+        YearMonth::new(year, month)
     }
 
     /// Training data cutoff: the broader end of the training-data date range.
     pub fn training_cutoff(self) -> YearMonth {
         let (year, month) = match self {
-            ModelId::Fable5 => (2026, 1),
-            ModelId::Opus5 => (2026, 5),
-            ModelId::Opus4_8 => (2026, 1),
-            ModelId::Sonnet5 => (2026, 1),
-            ModelId::Sonnet4_6 => (2026, 1),
-            ModelId::Haiku4_5 => (2025, 7),
+            ModelId::Fable5 => (2026, Month::January),
+            ModelId::Opus5 => (2026, Month::May),
+            ModelId::Opus4_8 => (2026, Month::January),
+            ModelId::Sonnet5 => (2026, Month::January),
+            ModelId::Sonnet4_6 => (2026, Month::January),
+            ModelId::Haiku4_5 => (2025, Month::July),
         };
-        YearMonth { year, month }
+        YearMonth::new(year, month)
     }
 
     /// Standard list price per MTok (see [`Pricing`] for caveats).

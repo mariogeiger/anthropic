@@ -1,6 +1,10 @@
 //! Enums mirroring API JSON values. `as_str()` is outbound; `from_str()` / the
 //! HTTP-status table are pure `match`-on-primitive lookup tables — wire
 //! vocabulary under §6, not a response parser.
+//!
+//! Every one of these enums serializes to its own wire string, so a wire struct
+//! anywhere in the crate holds the enum rather than the string: a `&'static str`
+//! field accepts any string, an enum field only a value the API accepts.
 
 /// Declares an enum that mirrors a closed set of API JSON string values.
 ///
@@ -8,6 +12,12 @@
 /// allocation, no formatting. The optional `roundtrip` prefix adds `from_str`,
 /// the documented inverse — a pure `match` on `&str` and therefore wire
 /// vocabulary rather than a response parser (§6).
+///
+/// Every one of these enums *is* a wire string, so every one serializes as that
+/// string, through the same `as_str` the outbound direction already uses. That is
+/// what lets a wire struct hold the enum itself instead of a `&'static str`
+/// obtained from it: a `&'static str` field is writable with any string at all,
+/// while a field of a closed enum has no invalid value to write.
 ///
 /// Every variant takes its own doc comment, because `#![deny(missing_docs)]`
 /// applies inside a macro expansion exactly as it does outside one.
@@ -20,6 +30,11 @@ macro_rules! api_enum {
             /// The string this value takes on the wire.
             pub fn as_str(self) -> &'static str {
                 match self { $($name::$variant => $s),* }
+            }
+        }
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+                s.serialize_str(self.as_str())
             }
         }
     };
@@ -43,6 +58,35 @@ macro_rules! api_enum {
 }
 
 pub(crate) use api_enum;
+
+api_enum! {
+    roundtrip
+    /// The `role` of one `messages[]` entry.
+    ///
+    /// Exactly the two roles the Messages API accepts on a message a caller
+    /// sends, so [`crate::context::Message::role`] can be a public field without
+    /// being a hole: a closed enum has no invalid value to write, which is what
+    /// makes "an unknown role cannot reach the wire" a fact about the type rather
+    /// than a promise in a doc comment.
+    ///
+    /// `system` is deliberately absent. Anthropic does accept a
+    /// `{"role": "system"}` entry mid-conversation, but only on some models and
+    /// only under placement rules the API enforces with a 400 — it may not be
+    /// first, must follow a user turn or a server-tool assistant turn, must be
+    /// last or be followed by an assistant turn, and may not sit beside another
+    /// one. A `Role::System` this crate cannot place correctly would let those
+    /// rejections be written, which is the opposite of what this enum is for.
+    /// Adding the feature means a `push_system` that upholds those rules, plus the
+    /// shared system-content type and cache-slot position described in CLAUDE.md
+    /// §7 — not a third variant here.
+    Role {
+        /// `user`: the caller's turn. Tool results go here too, which is where the
+        /// API expects them.
+        User => "user",
+        /// `assistant`: the model's own turn, replayed back into the conversation.
+        Assistant => "assistant",
+    }
+}
 
 api_enum! {
     /// The `media_type` of a base64 image source. The four formats the API accepts.
@@ -173,6 +217,16 @@ impl ErrorType {
 }
 
 api_enum! {
+    /// The `type` of a content block that carries text. One variant, because
+    /// `text` is the only block type a system prompt may hold — the API accepts
+    /// text there and nothing else.
+    TextBlockType {
+        /// The only type a system prompt block takes.
+        Text => "text",
+    }
+}
+
+api_enum! {
     /// The `cache_control.type` of a breakpoint.
     CacheControlType {
         /// The only type the API currently supports.
@@ -218,6 +272,22 @@ mod tests {
         // this crate models all emit it by default.
         assert_eq!(StopReason::from_str("model_context_window_exceeded"), Some(StopReason::ModelContextWindowExceeded));
         assert_eq!(StopReason::from_str("not_a_stop_reason"), None);
+    }
+
+    #[test]
+    fn role_roundtrips_and_rejects_everything_else() {
+        for r in [Role::User, Role::Assistant] {
+            assert_eq!(Role::from_str(r.as_str()), Some(r));
+        }
+        assert_eq!(Role::User.as_str(), "user");
+        assert_eq!(Role::Assistant.as_str(), "assistant");
+        // `system` is accepted mid-conversation by some models, and deliberately
+        // absent here: this crate cannot yet place such a message legally, so
+        // naming the role would let an API rejection be written. See the type docs.
+        assert_eq!(Role::from_str("system"), None);
+        assert_eq!(Role::from_str("wizard"), None);
+        // Serializing is the same string `as_str` gives.
+        assert_eq!(serde_json::to_value(Role::Assistant).unwrap(), "assistant");
     }
 
     #[test]
