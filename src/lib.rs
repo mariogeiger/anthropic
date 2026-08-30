@@ -6,8 +6,8 @@
 //! Inbound, a streaming decoder and a response decoder that make a truncated
 //! stream unreadable as a finished one.
 //!
-//! See [`CLAUDE.md`](https://github.com/mariogeiger/anthropic/blob/main/CLAUDE.md)
-//! for the design rules the whole crate follows.
+//! See [`SOUL.md`](https://github.com/mariogeiger/anthropic/blob/main/SOUL.md)
+//! for the mission and the design rules the whole crate follows.
 //!
 //! # Outbound
 //!

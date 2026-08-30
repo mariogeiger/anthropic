@@ -85,7 +85,7 @@ anthropic = { git = "https://github.com/mariogeiger/anthropic" }
 
 ## Design
 
-See [CLAUDE.md](CLAUDE.md) for the design philosophy.
+See [SOUL.md](SOUL.md) for the mission and the design principles.
 
 ## License
 

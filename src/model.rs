@@ -492,7 +492,7 @@ pub struct Opus5 {
 impl Default for Opus5 {
     /// Adaptive thinking on with `Omitted` display and the documented default
     /// effort, `high` — the runtime default the API applies when `thinking` is
-    /// absent, emitted explicitly (§5).
+    /// absent, emitted explicitly.
     fn default() -> Self {
         Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted, effort: Opus5Effort::High } }
     }
@@ -541,7 +541,7 @@ impl Opus5 {
 /// Whether Opus 5 thinks, and at what effort.
 pub enum Opus5Thinking {
     /// Adaptive thinking on. The state an omitted `thinking` field would also
-    /// produce, emitted explicitly per §5.
+    /// produce, emitted explicitly.
     Adaptive {
         /// Whether reasoning text is sent back.
         display: ThinkingDisplay,
@@ -581,7 +581,7 @@ api_enum! {
     ///
     /// `xhigh` and `max` exist on this model but not in this state — the API
     /// refuses them as unsupported with thinking disabled — so they are absent
-    /// from the type rather than rejected at runtime (§2).
+    /// from the type rather than rejected at runtime.
     Opus5ThinkingOffEffort {
         /// The least thinking.
         Low => "low",
@@ -690,7 +690,7 @@ pub struct Sonnet5 {
 
 impl Default for Sonnet5 {
     /// Adaptive thinking on with `Omitted` display — the runtime default the API
-    /// applies when `thinking` is absent, emitted explicitly (§5).
+    /// applies when `thinking` is absent, emitted explicitly.
     fn default() -> Self {
         Self { thinking: Sonnet5Thinking::Adaptive { display: ThinkingDisplay::Omitted }, effort: Sonnet5Effort::High }
     }
@@ -813,7 +813,7 @@ pub enum Sonnet4_6Sampling {
 
 api_enum! {
     /// How much thinking Sonnet 4.6 spends. No `xhigh`: that level is Opus-tier
-    /// and Sonnet 4.6 rejects it, so it is absent from the type (§2).
+    /// and Sonnet 4.6 rejects it, so it is absent from the type.
     Sonnet4_6Effort {
         /// The least thinking.
         Low => "low",

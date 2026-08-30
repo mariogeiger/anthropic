@@ -12,7 +12,7 @@
 //!   * `live_ok_*`  — a body the crate *produces* is accepted (HTTP 200).
 //!   * `live_400_*` — a combo the crate makes *unrepresentable* really is a
 //!     400 at the API, documenting why the type system forbids it
-//!     (CLAUDE.md §2). These post raw JSON the crate can't emit.
+//!     (one type per model). These post raw JSON the crate can't emit.
 //!
 //! Every result below was observed live on 2026-05-29, except the Fable 5 cases
 //! (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
@@ -364,7 +364,8 @@ fn live_ok_prompt_cache_creation() {
 
 #[test]
 fn live_ok_prompt_cache_read() {
-    // §1's core promise plus the minimum-length boundary, end-to-end on Sonnet 5:
+    // The cache invariants' core promise plus the minimum-length boundary,
+    // end-to-end on Sonnet 5:
     //  * a prefix *over* the model's minimum is written on the 1st request and
     //    *re-read* on a 2nd identical-prefix request (cache_read_input_tokens > 0);
     //  * a prefix *below* `ModelId::min_cacheable_prefix_tokens` is a silent no-op —
@@ -407,7 +408,7 @@ fn live_ok_prompt_cache_read() {
 
 #[test]
 fn live_ok_sonnet_5_roll_cache_across_turns() {
-    // `roll_cache` is the crate's append-only cache evolution (§1): move a rolling
+    // `roll_cache` is the crate's append-only cache evolution: move a rolling
     // breakpoint to the conversation tail each turn so the growing prefix is
     // re-read, not rebuilt. No system anchor here — the breakpoint lives purely on
     // message content, so the 2nd turn's cache_read is attributable to the roll.
@@ -433,7 +434,7 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
     assert!(read > 0, "rolled prefix should be re-read on the 2nd turn, usage: {}", body2["usage"]);
 }
 
-// ── Negative: combos the crate forbids really do 400 (CLAUDE.md §2) ────────────
+// ── Negative: combos the crate forbids really do 400 ──────────────────────────
 
 #[test]
 fn live_400_opus_temperature() {
