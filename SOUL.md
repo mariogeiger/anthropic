@@ -145,6 +145,20 @@ bookkeeping consistent with content.
 Before adding any operation that mutates conversation state, convince yourself it
 cannot invalidate a previous cache prefix.
 
+### The type holds the wire order, it does not rebuild it
+
+The request's prefix is hashed in one order — `tools`, then `system`, then
+`messages` — and that order is what every cache hit is measured against. So the
+conversation type lists them in that order and fixes each at the point the API
+fixes it: the opening is an argument to the constructor, not a field a later call
+can install. A field settable at any moment says "these things happen to be here"
+where the API says "in this order, and the opening is not a message".
+
+The opening is therefore its own type with one variant per legitimate opening.
+Where the API documents a field as optional, absence is one of those variants
+rather than an unset field: a conversation with no system prompt is a decision the
+type records, not a decision deferred.
+
 ### Conversation state and per-call parameters are different types
 
 Conversation state — system prompt, tools, message history, cache breakpoints —

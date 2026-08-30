@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.6.0
+
+The conversation type now holds the wire order instead of rebuilding it. Pure
+restructuring: every request body this crate emits is byte-identical to 0.5.0,
+verified by serializing all three openings on both revisions and diffing.
+
+### Breaking: the opening is an argument to `Context::new`
+
+`Context::new()` followed by `with_system(...)` let the opening be installed at
+any moment, including after messages had been appended, and `system` sat as a
+field beside `tools` and `messages` as though the three were peers. The API says
+otherwise: the prefix is hashed `tools`, then `system`, then `messages`, and a
+system instruction that applies from the start is *not* a message — a
+`{"role": "system"}` entry "cannot be the first entry in `messages`".
+
+- `context::Opening` is new, with one variant per legitimate opening:
+  `Opening::None`, `Opening::Instruction(String)`, and
+  `Opening::CachedInstruction { text, slot, ttl }`. Three and not two, because the
+  API documents `system` as optional, so "no opening" is a state the type records
+  rather than an unset field. Constructors `Opening::instruction` and
+  `Opening::cached_instruction` mirror the two former builders.
+- `Context::new` takes it: `Context::new(opening)`. `Context::with_system` and
+  `Context::with_system_cached` are gone.
+- `Context::new` is now **infallible**. `with_system_cached` returned
+  `Result<_, AnchorError>` because a slot might already be occupied; on a
+  conversation that did not exist a moment ago it cannot be, so the error is gone
+  by construction rather than ignored. `AnchorError` remains for
+  `with_tools_cached`, its only remaining source.
+- `Context::opening()` reads the instruction back, for a caller replaying a
+  conversation or tracing a cache miss to the prefix it is measured against.
+- `Context`'s field order is now `tools`, `system`, `messages` — the wire order.
+- `Context::default()` is `Context::new(Opening::None)`.
+
+**Migration.** Mechanical, three cases:
+
+```text
+Context::new()                                    → Context::new(Opening::None)
+Context::new().with_system(text)                  → Context::new(Opening::instruction(text))
+Context::new().with_system_cached(slot, text, ttl)? → Context::new(Opening::cached_instruction(text, slot, ttl))
+```
+
+Note the argument order in the cached form: text first, then slot, then TTL, so
+the three constructors read the same way. The `?` or `.unwrap()` on the cached
+form is dropped — it no longer returns a `Result`. Import `anthropic::context::Opening`.
+
+### Three new `compile_fail` proofs
+
+The opening cannot be installed late (`with_system` does not exist, E0599) and is
+not an assignable field (`system` is private, E0616). Each was checked to fail for
+its stated reason, alongside the existing proof that `messages` is private.
+`every_opening_reaches_its_documented_wire_shape` asserts all three wire shapes:
+absent field, bare string, one-element block array.
+
+### Unchanged, deliberately
+
+The sequence rules stay exactly where they were: `push_system` refuses the first
+position and an assistant predecessor, `Request::new` refuses a wrong successor and
+a model without the feature. A typestate encoding of those rules was designed and
+prototyped — the placement rules are a regular language, recognized by a four-state
+DFA that matched all ten live measurements — and deliberately not adopted, because
+the one real consumer builds its message list in a loop and a loop cannot carry a
+compile-time state. The analysis is recorded here so the option is not re-derived
+from scratch.
+
 ## 0.5.0
 
 Mid-conversation system messages are not a second spelling of the top-level

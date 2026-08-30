@@ -43,7 +43,7 @@
 //! org with a `.key`.
 
 use anthropic::block::{ContentBlock, TextBlock};
-use anthropic::context::{CacheSlot, Context, Tool};
+use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use anthropic::request::{
     CountRequest, EndUserId, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Opus5ThinkingOffEffort,
@@ -130,7 +130,7 @@ fn assert_400(code: u16, body: &Value) -> String {
 }
 
 fn user_ctx(text: &str) -> Context {
-    let mut c = Context::new();
+    let mut c = Context::new(Opening::None);
     c.push_user_text(text);
     c
 }
@@ -326,7 +326,7 @@ fn live_ok_haiku_4_5_legacy_thinking() {
 #[test]
 fn live_ok_count_tokens() {
     let key = key_or_skip!();
-    let ctx = Context::new().with_system("You are helpful.");
+    let ctx = Context::new(Opening::instruction("You are helpful."));
     let mut ctx = ctx;
     ctx.push_user_text("How many tokens is this?");
     let (code, body) = post(anthropic::COUNT_TOKENS_PATH, &CountRequest::new(&ctx, ModelId::Opus4_8), &key);
@@ -340,7 +340,7 @@ fn live_ok_count_tokens_sonnet_5_new_tokenizer() {
     // genuinely distinct model, not a 4.6 alias: its new tokenizer yields more tokens
     // than Sonnet 4.6 for the same text (~30% more, per the launch docs).
     let key = key_or_skip!();
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user_text(
         "Tokenizers segment text into subword units; the same passage can map to \
          different token counts across model generations, which changes both cost \
@@ -362,8 +362,7 @@ fn live_ok_prompt_cache_creation() {
     // actually engage caching (usage reports cached tokens).
     let key = key_or_skip!();
     let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
-    let ctx =
-        Context::new().with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes).expect("anchor system cache");
+    let ctx = Context::new(Opening::cached_instruction(big, CacheSlot::S0, CacheTtl::FiveMinutes));
     let mut ctx = ctx;
     ctx.push_user_text("Reply: ok");
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_4_8(), 16).unwrap(), &key);
@@ -388,8 +387,7 @@ fn live_ok_prompt_cache_read() {
 
     // Over the minimum: caches on write, reads on the 2nd identical request.
     let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
-    let mut ctx =
-        Context::new().with_system_cached(CacheSlot::S0, big, CacheTtl::FiveMinutes).expect("anchor system cache");
+    let mut ctx = Context::new(Opening::cached_instruction(big, CacheSlot::S0, CacheTtl::FiveMinutes));
     ctx.push_user_text("Reply: ok");
     let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
     assert_ok(code1, &body1);
@@ -401,8 +399,7 @@ fn live_ok_prompt_cache_read() {
     // Below the minimum: cache_control is set, but the API silently declines to
     // cache — no creation, no read, no error.
     let small = "Be concise.";
-    let mut ctx =
-        Context::new().with_system_cached(CacheSlot::S0, small, CacheTtl::FiveMinutes).expect("anchor system cache");
+    let mut ctx = Context::new(Opening::cached_instruction(small, CacheSlot::S0, CacheTtl::FiveMinutes));
     ctx.push_user_text("Reply: ok");
     // The whole-request token count is an upper bound on the cached prefix, so
     // count < min proves the prefix is genuinely below the threshold.
@@ -427,7 +424,7 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
     let big = "The quick brown fox jumps over the lazy dog. ".repeat(100); // ~1.8k tokens, over the 1,024 min
 
     // Turn 1: a large user message, breakpoint rolled to its tail.
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user_text(big);
     ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).expect("roll to turn-1 tail");
     let (code1, body1) = post(MESSAGES_PATH, &Request::new(&ctx, Model::sonnet_5(), 16).unwrap(), &key);
@@ -450,7 +447,7 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
 #[test]
 fn live_ok_a_system_message_is_accepted_after_a_user_turn() {
     let key = key_or_skip!();
-    let mut ctx = Context::new().with_system("You are helpful.");
+    let mut ctx = Context::new(Opening::instruction("You are helpful."));
     ctx.push_user_text("Name a fruit in one word.");
     ctx.push_system_text("Reply only in French.").expect("a system message after a user turn is legal");
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 24).unwrap(), &key);
@@ -464,7 +461,7 @@ fn live_ok_a_system_message_is_accepted_after_a_user_turn() {
 #[test]
 fn live_ok_adjacent_system_messages_are_accepted() {
     let key = key_or_skip!();
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user_text("Name a fruit in one word.");
     ctx.push_system_text("Reply only in French.").unwrap();
     ctx.push_system_text("Use no punctuation.").unwrap();
@@ -518,7 +515,7 @@ fn live_report_the_gateway_is_more_permissive_than_the_documented_placement_rule
 #[test]
 fn live_ok_a_cited_document_produces_a_citation() {
     let key = key_or_skip!();
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user(vec![
         ContentBlock::Document(
             DocumentBlock::cited(DocumentSource::text("The sky is blue during the day. At night it is black."))
@@ -538,7 +535,7 @@ fn live_ok_a_cited_document_produces_a_citation() {
 #[test]
 fn live_ok_a_cited_search_result_produces_a_citation() {
     let key = key_or_skip!();
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user(vec![
         ContentBlock::search_result(SearchResultBlock::cited(
             "https://example.com/guide",
@@ -556,7 +553,7 @@ fn live_ok_a_cited_search_result_produces_a_citation() {
 #[test]
 fn live_ok_service_tier_metadata_and_output_format_are_accepted() {
     let key = key_or_skip!();
-    let mut ctx = Context::new();
+    let mut ctx = Context::new(Opening::None);
     ctx.push_user_text("Give me the number seven as JSON matching the schema.");
     let schema = json!({"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]});
     let request = Request::new(&ctx, Model::opus_5(), 60)
@@ -580,7 +577,7 @@ fn live_ok_a_deferred_tool_is_accepted_beside_an_eager_one() {
         Tool::new("get_weather", json!({"type": "object"})).description("weather now"),
         Tool::new("get_forecast", json!({"type": "object"})).description("weather later").deferred(),
     ];
-    let mut ctx = Context::new().with_tools(tools);
+    let mut ctx = Context::new(Opening::None).with_tools(tools);
     ctx.push_user_text("Reply with the single word: ok");
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 16).unwrap(), &key);
     assert_ok(code, &body);

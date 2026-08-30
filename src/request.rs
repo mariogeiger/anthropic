@@ -637,13 +637,14 @@ impl Serialize for CountRequest<'_> {
 mod tests {
     use super::*;
     use crate::ThinkingDisplay;
+    use crate::context::Opening;
     use serde_json::Value;
 
     fn req(m: impl Into<Model>) -> Value {
-        serde_json::to_value(Request::new(&Context::new(), m, 1024).unwrap()).unwrap()
+        serde_json::to_value(Request::new(&Context::new(Opening::None), m, 1024).unwrap()).unwrap()
     }
     fn count(id: ModelId) -> Value {
-        serde_json::to_value(CountRequest::new(&Context::new(), id)).unwrap()
+        serde_json::to_value(CountRequest::new(&Context::new(Opening::None), id)).unwrap()
     }
     fn approx(v: &Value, expected: f64) {
         let got = v.as_f64().expect("not a number");
@@ -807,7 +808,7 @@ mod tests {
 
     #[test]
     fn max_tokens_must_be_in_range() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         // Zero is rejected up front (the API requires >= 1).
         assert_eq!(
             Request::new(&ctx, Model::opus_4_8(), 0).err(),
@@ -881,7 +882,7 @@ mod tests {
     #[test]
     fn haiku_4_5_legacy_thinking() {
         // budget_tokens must stay below max_tokens (validated by `Request::new`).
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         let v =
             serde_json::to_value(Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1536).unwrap()).unwrap();
         assert_eq!(v["thinking"]["type"], "enabled");
@@ -894,7 +895,7 @@ mod tests {
 
     #[test]
     fn haiku_thinking_budget_must_be_below_max_tokens() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         // budget_tokens >= max_tokens is refused before the API can 400.
         assert_eq!(
             Request::new(&ctx, Model::haiku_4_5().with_thinking(1024), 1024).err(),
@@ -912,7 +913,7 @@ mod tests {
     #[test]
     fn the_service_tier_is_always_emitted_at_its_documented_default() {
         assert_eq!(req(Model::opus_5())["service_tier"], "auto");
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         let v = serde_json::to_value(
             Request::new(&ctx, Model::opus_5(), 16).unwrap().with_service_tier(ServiceTier::StandardOnly),
         )
@@ -929,7 +930,7 @@ mod tests {
     /// than defaulted.
     #[test]
     fn an_end_user_id_appears_only_when_one_is_named() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         assert!(req(Model::opus_5()).get("metadata").is_none(), "no end user, no metadata");
         let id = EndUserId::new("3f2b8c1e-0000-4a5d-9e77-1c2b3a4d5e6f").unwrap();
         let v = serde_json::to_value(Request::new(&ctx, Model::opus_5(), 16).unwrap().with_end_user_id(id)).unwrap();
@@ -951,7 +952,7 @@ mod tests {
     /// of it.
     #[test]
     fn an_output_format_joins_effort_in_the_output_config() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         let schema = serde_json::json!({"type": "object", "properties": {"n": {"type": "integer"}}});
         let v = serde_json::to_value(
             Request::new(&ctx, Model::opus_5(), 16).unwrap().with_output_format(OutputFormat::json_schema(schema)),
@@ -966,7 +967,7 @@ mod tests {
     /// appears carrying only the half that applies.
     #[test]
     fn a_model_without_effort_still_carries_an_output_format() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         assert!(req(Model::haiku_4_5()).get("output_config").is_none(), "neither half, no object");
         let v = serde_json::to_value(
             Request::new(&ctx, Model::haiku_4_5(), 16)
@@ -990,8 +991,8 @@ mod tests {
 
     #[test]
     fn count_request_carries_system_and_tools() {
-        let ctx =
-            Context::new().with_system("sys").with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
+        let ctx = Context::new(Opening::instruction("sys"))
+            .with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
         let v = serde_json::to_value(CountRequest::new(&ctx, ModelId::Sonnet4_6)).unwrap();
         assert_eq!(v["model"], "claude-sonnet-4-6");
         assert_eq!(v["system"], "sys");
@@ -1007,7 +1008,7 @@ mod tests {
 
     #[test]
     fn stop_sequences_roundtrip() {
-        let ctx = Context::new();
+        let ctx = Context::new(Opening::None);
         let v = serde_json::to_value(
             Request::new(&ctx, Model::opus_4_8(), 1024).unwrap().with_stop_sequences(vec!["STOP".into(), "END".into()]),
         )

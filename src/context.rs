@@ -1,10 +1,12 @@
 //! Cache-safe, append-only conversation state.
 //!
 //! Invariants enforced by construction: past bytes are frozen (no `&mut` to old
-//! messages); `system`/`tools` set at construction only; 4 cache breakpoints live
-//! in named slots (`CacheSlot::S0..S3`) — impossible to exceed the API limit;
-//! `roll_cache` only moves slot metadata, never rewrites content; TTL ordering
-//! (1h before 5m) validated before every commit.
+//! messages); the [`Opening`] is an argument to [`Context::new`] and `tools` are
+//! set at construction, so the wire order `tools → system → messages` is the
+//! order the type holds them in rather than one rebuilt at serialization; 4 cache
+//! breakpoints live in named slots (`CacheSlot::S0..S3`) — impossible to exceed
+//! the API limit; `roll_cache` only moves slot metadata, never rewrites content;
+//! TTL ordering (1h before 5m) validated before every commit.
 //!
 //! Types model what the model *sees*, not wire-format field presence: every
 //! `Option` represents a real runtime distinction. `SystemPrompt` is one struct
@@ -13,7 +15,7 @@
 //! `cache_control` is not reachable from outside the crate: `CacheControl` has
 //! no public constructor and no public fields, and the `cache_control` slot on
 //! every content block and `Tool` is crate-private. The only way to attach a
-//! breakpoint is through `CacheSlot` via `with_system_cached`,
+//! breakpoint is through `CacheSlot` via `Opening::CachedInstruction`,
 //! `with_tools_cached`, or `roll_cache`, which keeps slot bookkeeping
 //! consistent with content.
 //!
@@ -48,12 +50,32 @@
 //! conversation and [`crate::request::Request::new`] the only way one leaves.
 //!
 //! ```compile_fail
-//! use anthropic::context::Context;
+//! use anthropic::context::{Context, Opening};
 //!
 //! // The field is private, so a leading system message cannot be installed
 //! // behind `push_system`'s back.
-//! let mut ctx = Context::new();
+//! let mut ctx = Context::new(Opening::None);
 //! ctx.messages.push(anthropic::context::Message::System(Vec::new()));
+//! ```
+//!
+//! The opening is the same story one level up. It is an argument to
+//! [`Context::new`], not a field and not a builder step, so a conversation always
+//! has its opening decided before it can hold a message and no later call can
+//! replace it:
+//!
+//! ```compile_fail
+//! use anthropic::context::{Context, Opening};
+//!
+//! // There is no `with_system` to install an opening after the fact.
+//! let ctx = Context::new(Opening::None).with_system("too late");
+//! ```
+//!
+//! ```compile_fail
+//! use anthropic::context::{Context, Opening};
+//!
+//! // Nor is the opening an assignable field.
+//! let mut ctx = Context::new(Opening::None);
+//! ctx.system = Some(String::from("too late"));
 //! ```
 
 use crate::block::{ContentBlock, TextBlock, ToolResultContent};
@@ -314,6 +336,82 @@ impl Tool {
     }
 }
 
+/// How a conversation opens, before any message.
+///
+/// # Why the opening is not a message
+///
+/// The API asks this question twice and answers it the same way both times. The
+/// top-level `system` field is not an entry in `messages`, and a
+/// `{"role": "system"}` entry "cannot be the first entry in `messages`" — "use the
+/// top-level `system` field for instructions that apply from the very start"
+/// (<https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages>).
+/// So the position before the first message is reachable *only* through this
+/// field, and an instruction that applies from the start has exactly one home.
+///
+/// The reason is the prompt cache. The hashed prefix runs `tools`, then `system`,
+/// then `messages`, so the opening is the part every later turn is measured
+/// against. A message is appended and costs nothing; the opening is rewritten and
+/// costs the whole conversation. They are different operations on different parts
+/// of the request, which is why they are different types here rather than one
+/// list with a special first element.
+///
+/// # Three openings, because `system` is optional
+///
+/// The API documents `system` as optional, so "no opening at all" is a real state
+/// and not the absence of a decision — a conversation may simply start with
+/// messages. Those are the three variants, and the enum is what keeps them three:
+/// a `None` plus a `bool` would admit a fourth, meaningless combination.
+///
+/// Deciding the opening at [`Context::new`] rather than through a builder is what
+/// makes the wire order structural. `Context::new(Opening::None)` followed by `with_system` let
+/// the opening be installed at any moment, including after messages had been
+/// appended — the type said "these three things happen to be here" while the API
+/// says "tools, then system, then messages". Taking it as an argument means the
+/// opening exists before the first message can, and cannot be replaced afterwards
+/// because no method takes `&mut` to it.
+#[derive(Debug, Clone)]
+pub enum Opening {
+    /// No system prompt. The conversation starts with its first message, and the
+    /// `system` field is absent from the body.
+    None,
+    /// An instruction that applies from the very start, with no cache breakpoint.
+    Instruction(String),
+    /// An instruction with a cache breakpoint at its end, in the named slot.
+    ///
+    /// The breakpoint is part of the opening rather than a later operation on it,
+    /// because an anchor may not move once set: everything cached after it is
+    /// measured from here. [`CacheSlot`] is the only way to name one, which is how
+    /// the four-breakpoint limit stays unwritable rather than checked.
+    CachedInstruction {
+        /// The instruction itself.
+        text: String,
+        /// Which of the four breakpoints anchors it.
+        slot: CacheSlot,
+        /// How long the entry lives.
+        ttl: CacheTtl,
+    },
+}
+
+impl Opening {
+    /// An instruction with no breakpoint.
+    pub fn instruction(text: impl Into<String>) -> Self {
+        Self::Instruction(text.into())
+    }
+
+    /// An instruction anchored by a cache breakpoint.
+    pub fn cached_instruction(text: impl Into<String>, slot: CacheSlot, ttl: CacheTtl) -> Self {
+        Self::CachedInstruction { text: text.into(), slot, ttl }
+    }
+
+    /// The instruction's text, or `None` when the conversation has no opening.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Opening::None => None,
+            Opening::Instruction(text) | Opening::CachedInstruction { text, .. } => Some(text),
+        }
+    }
+}
+
 // Wire shape: bare string when no cache_control, one-element block array when set.
 #[derive(Debug, Clone)]
 pub(crate) struct SystemPrompt {
@@ -371,7 +469,11 @@ impl std::fmt::Display for RollCacheError {
 
 impl std::error::Error for RollCacheError {}
 
-/// Why a `system` or `tools` cache anchor could not be placed.
+/// Why a `tools` cache anchor could not be placed.
+///
+/// The opening's anchor cannot fail — [`Context::new`] places it on a conversation
+/// with no slots yet occupied — so only [`Context::with_tools_cached`] returns
+/// this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnchorError {
     /// A cache slot already holds a breakpoint. Anchors never overwrite.
@@ -404,7 +506,7 @@ pub enum SystemMessageError {
     Empty,
     /// It would be the first entry, with no user turn for it to follow. A
     /// conversation that opens with an instruction has a system *prompt*, which is
-    /// [`Context::with_system`] and is cached better anyway.
+    /// [`Opening::Instruction`] and is cached better anyway.
     First,
     /// It would follow an assistant turn. The API accepts one only after a user
     /// turn, or after an assistant turn ending in a server tool result — a block
@@ -417,7 +519,7 @@ impl std::fmt::Display for SystemMessageError {
         match self {
             SystemMessageError::Empty => write!(f, "a system message must carry at least one block"),
             SystemMessageError::First => {
-                write!(f, "a system message cannot be first; use `with_system` for a system prompt")
+                write!(f, "a system message cannot be first; use `Opening::Instruction` for a system prompt")
             }
             SystemMessageError::AfterAssistant => {
                 write!(f, "a system message must follow a user turn, not an assistant turn")
@@ -432,46 +534,66 @@ impl std::error::Error for SystemMessageError {}
 
 /// The conversation, and the cache invariants that hold over it.
 ///
+/// The field order is the wire order — `tools`, then the opening, then `messages`
+/// — because that is the order the API hashes the prefix in, and a type that
+/// listed them in any other order would be reassembling the request at
+/// serialization time instead of holding it.
+///
 /// Append-only by construction: there is no `&mut` path to a committed message,
-/// because rewriting history silently invalidates the prompt cache. System prompt
-/// and tools are set once, at construction. Breakpoints live in four named
-/// [`CacheSlot`]s and are moved by metadata-only operations that validate TTL
-/// ordering *before* they commit.
+/// because rewriting history silently invalidates the prompt cache. The
+/// [`Opening`] is fixed at [`Context::new`] and tools at construction.
+/// Breakpoints live in four named [`CacheSlot`]s and are moved by metadata-only
+/// operations that validate TTL ordering *before* they commit.
 pub struct Context {
-    pub(crate) system: Option<SystemPrompt>,
     pub(crate) tools: Vec<Tool>,
+    pub(crate) system: Option<SystemPrompt>,
     pub(crate) messages: Vec<Message>,
     slots: [Option<SlotState>; 4],
 }
 
 impl Default for Context {
+    /// A conversation with no opening, which is one of the three [`Opening`]s
+    /// rather than an unset field.
     fn default() -> Self {
-        Self::new()
+        Self::new(Opening::None)
     }
 }
 
 impl Context {
-    /// An empty conversation with no system prompt, tools, or breakpoints.
-    pub fn new() -> Self {
-        Self { system: None, tools: Vec::new(), messages: Vec::new(), slots: [None; 4] }
+    /// A conversation that opens as `opening` says, with no tools or messages yet.
+    ///
+    /// The opening is an argument rather than a builder step because it is the
+    /// first thing on the wire: taking it here means no `Context` ever exists
+    /// without its opening decided, so the opening cannot be installed after a
+    /// message has been appended and cannot be replaced later.
+    ///
+    /// Infallible, which the old `with_system_cached` was not. A slot cannot
+    /// already be occupied on a conversation that did not exist a moment ago, so
+    /// the only way the anchor placement could fail is gone — one fewer `Result`
+    /// for every caller, bought by construction rather than by ignoring an error.
+    pub fn new(opening: Opening) -> Self {
+        let mut context = Self { tools: Vec::new(), system: None, messages: Vec::new(), slots: [None; 4] };
+        match opening {
+            Opening::None => {}
+            Opening::Instruction(text) => {
+                context.system = Some(SystemPrompt { text, cache_control: None });
+            }
+            Opening::CachedInstruction { text, slot, ttl } => {
+                context.system = Some(SystemPrompt { text, cache_control: None });
+                context.write_cache_control(SlotLocation::System, Some(CacheControl::ephemeral(ttl)));
+                context.slots[slot.idx()] = Some(SlotState { location: SlotLocation::System, ttl });
+            }
+        }
+        context
     }
 
-    /// Sets the system prompt, uncached.
-    pub fn with_system(mut self, text: impl Into<String>) -> Self {
-        self.system = Some(SystemPrompt { text: text.into(), cache_control: None });
-        self
-    }
-
-    /// Set the system prompt with a cache breakpoint.
-    pub fn with_system_cached(
-        mut self,
-        slot: CacheSlot,
-        text: impl Into<String>,
-        ttl: CacheTtl,
-    ) -> Result<Self, AnchorError> {
-        self.system = Some(SystemPrompt { text: text.into(), cache_control: None });
-        self.place_anchor(slot, SlotLocation::System, ttl)?;
-        Ok(self)
+    /// The instruction this conversation opened with, if it opened with one.
+    ///
+    /// Readable because a caller replaying a conversation wants to see what the
+    /// model was told from the start, and because the opening is the one part of
+    /// the prefix that a cache miss is usually traced to.
+    pub fn opening(&self) -> Option<&str> {
+        self.system.as_ref().map(|prompt| prompt.text.as_str())
     }
 
     /// Sets the tools, uncached.
@@ -486,7 +608,7 @@ impl Context {
             return Err(AnchorError::NoToolsToCache);
         }
         self.tools = tools;
-        self.place_anchor(slot, SlotLocation::Tools, ttl)?;
+        self.place_tools_anchor(slot, ttl)?;
         Ok(self)
     }
 
@@ -659,17 +781,17 @@ impl Context {
         Ok((m, b))
     }
 
-    /// Record an anchor (System/Tools) in `slot` and stamp its `cache_control`.
-    /// Caller must have already installed `self.system` / `self.tools` with
-    /// `cache_control: None`. Refuses to overwrite an occupied slot so anchors
-    /// never clobber an existing breakpoint.
-    fn place_anchor(&mut self, slot: CacheSlot, location: SlotLocation, ttl: CacheTtl) -> Result<(), AnchorError> {
-        debug_assert!(matches!(location, SlotLocation::System | SlotLocation::Tools));
+    /// Record the tools anchor in `slot` and stamp its `cache_control`.
+    ///
+    /// Only tools reach here now: the opening's anchor is placed by
+    /// [`Context::new`], where no slot can yet be occupied. Refuses to overwrite
+    /// an occupied slot so an anchor never clobbers an existing breakpoint.
+    fn place_tools_anchor(&mut self, slot: CacheSlot, ttl: CacheTtl) -> Result<(), AnchorError> {
         if self.slots[slot.idx()].is_some() {
             return Err(AnchorError::SlotAlreadyInUse(slot));
         }
-        self.write_cache_control(location, Some(CacheControl::ephemeral(ttl)));
-        self.slots[slot.idx()] = Some(SlotState { location, ttl });
+        self.write_cache_control(SlotLocation::Tools, Some(CacheControl::ephemeral(ttl)));
+        self.slots[slot.idx()] = Some(SlotState { location: SlotLocation::Tools, ttl });
         Ok(())
     }
 
@@ -749,7 +871,7 @@ mod tests {
 
     #[test]
     fn empty_request_serializes() {
-        let v = req(&Context::new());
+        let v = req(&Context::new(Opening::None));
         assert_eq!(v["model"], "claude-opus-4-8");
         assert_eq!(v["max_tokens"], 1024);
         assert!(v["messages"].is_array());
@@ -757,13 +879,13 @@ mod tests {
 
     #[test]
     fn roll_cache_on_empty_errors() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         assert_eq!(ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap_err(), RollCacheError::NoBlocksToCache,);
     }
 
     #[test]
     fn roll_cache_tail_and_move() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("one");
         ctx.roll_cache(CacheSlot::S3, CacheTtl::FiveMinutes).unwrap();
         assert_eq!(req(&ctx)["messages"][0]["content"][0]["cache_control"]["ttl"], "5m");
@@ -779,7 +901,7 @@ mod tests {
 
     #[test]
     fn anchors_cannot_be_rolled() {
-        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap();
+        let mut ctx = Context::new(Opening::cached_instruction("sys", CacheSlot::S0, CacheTtl::OneHour));
         ctx.push_user_text("hi");
         assert_eq!(
             ctx.roll_cache(CacheSlot::S0, CacheTtl::OneHour).unwrap_err(),
@@ -789,7 +911,7 @@ mod tests {
 
     #[test]
     fn ttl_ordering_enforced() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("one");
         ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
         ctx.push_user_text("two");
@@ -797,7 +919,7 @@ mod tests {
         assert_eq!(ctx.roll_cache(CacheSlot::S1, CacheTtl::OneHour).unwrap_err(), RollCacheError::TtlOrderingViolation,);
 
         // 1h system anchor then 5m tail is fine.
-        let mut ctx = Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap();
+        let mut ctx = Context::new(Opening::cached_instruction("sys", CacheSlot::S0, CacheTtl::OneHour));
         ctx.push_user_text("hi");
         ctx.roll_cache(CacheSlot::S3, CacheTtl::FiveMinutes).unwrap();
         assert_eq!(ctx.breakpoint_count(), 2);
@@ -805,7 +927,7 @@ mod tests {
 
     #[test]
     fn conflicting_ttl_at_same_position_rejected() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("one");
         ctx.roll_cache(CacheSlot::S0, CacheTtl::OneHour).unwrap();
         // S1 targets the same tail block with a different TTL — committing would
@@ -821,7 +943,7 @@ mod tests {
 
     #[test]
     fn clear_cache_removes_metadata() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("hi");
         ctx.roll_cache(CacheSlot::S3, CacheTtl::FiveMinutes).unwrap();
         ctx.clear_cache(CacheSlot::S3).unwrap();
@@ -829,13 +951,40 @@ mod tests {
         assert_eq!(ctx.breakpoint_count(), 0);
     }
 
+    /// The three openings the API admits, each reaching its own wire shape.
+    ///
+    /// Three and not two: `system` is documented as optional, so a conversation
+    /// with no opening at all is a real state rather than an undecided one.
+    #[test]
+    fn every_opening_reaches_its_documented_wire_shape() {
+        // No opening: the field is absent, not empty. An empty string would be a
+        // different prefix and a different cache key.
+        let none = req(&Context::new(Opening::None));
+        assert!(none.get("system").is_none(), "no opening emits no system field");
+        assert_eq!(Context::new(Opening::None).opening(), None);
+
+        // An instruction: the bare string, which is the uncached shape.
+        let instruction = req(&Context::new(Opening::instruction("you are helpful")));
+        assert_eq!(instruction["system"], "you are helpful");
+        assert_eq!(Context::new(Opening::instruction("you are helpful")).opening(), Some("you are helpful"));
+
+        // A cached instruction: the one-element block array, the only shape that
+        // can carry a breakpoint, and the slot is accounted for.
+        let cached = Context::new(Opening::cached_instruction("sys", CacheSlot::S0, CacheTtl::OneHour));
+        assert_eq!(cached.breakpoint_count(), 1, "the opening's anchor occupies its slot");
+        let v = req(&cached);
+        assert_eq!(v["system"][0]["type"], "text");
+        assert_eq!(v["system"][0]["text"], "sys");
+        assert_eq!(v["system"][0]["cache_control"]["ttl"], "1h");
+    }
+
     #[test]
     fn system_wire_shape_switches_on_cache() {
         // Plain string when no cache_control.
-        assert_eq!(req(&Context::new().with_system("you are helpful"))["system"], "you are helpful");
+        assert_eq!(req(&Context::new(Opening::instruction("you are helpful")))["system"], "you are helpful");
 
         // One-element block array when cached.
-        let v = req(&Context::new().with_system_cached(CacheSlot::S0, "sys", CacheTtl::OneHour).unwrap());
+        let v = req(&Context::new(Opening::cached_instruction("sys", CacheSlot::S0, CacheTtl::OneHour)));
         assert_eq!(v["system"][0]["type"], "text");
         assert_eq!(v["system"][0]["text"], "sys");
         assert_eq!(v["system"][0]["cache_control"]["ttl"], "1h");
@@ -843,7 +992,7 @@ mod tests {
 
     #[test]
     fn roles_reach_the_wire_as_their_strings() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("one");
         ctx.push_assistant_text("two");
         ctx.push_tool_result("tu_1", ToolResultContent::Text("three".into()));
@@ -864,7 +1013,7 @@ mod tests {
     /// before it moves and the cache still matches.
     #[test]
     fn a_system_message_reaches_the_wire_after_the_turn_it_follows() {
-        let mut ctx = Context::new().with_system("you are helpful");
+        let mut ctx = Context::new(Opening::instruction("you are helpful"));
         ctx.push_user_text("name a fruit");
         ctx.push_system_text("Answer in French.").unwrap();
         let v = req(&ctx);
@@ -882,7 +1031,7 @@ mod tests {
     fn a_tool_change_rides_in_a_system_message_without_touching_the_tool_definitions() {
         use crate::system::{SystemBlock, ToolReference};
         let tools = vec![Tool::new("get_time", serde_json::json!({"type": "object"}))];
-        let mut ctx = Context::new().with_tools(tools);
+        let mut ctx = Context::new(Opening::None).with_tools(tools);
         ctx.push_user_text("what time is it");
         ctx.push_system(vec![
             SystemBlock::text("The clock is offline."),
@@ -899,21 +1048,21 @@ mod tests {
     /// is built. Each is stated by the server; see `SystemMessageError`.
     #[test]
     fn a_system_message_refuses_the_placements_the_api_rejects() {
-        let mut empty = Context::new();
+        let mut empty = Context::new(Opening::None);
         empty.push_user_text("hi");
         assert_eq!(empty.push_system(vec![]), Err(SystemMessageError::Empty));
 
-        let mut first = Context::new();
+        let mut first = Context::new(Opening::None);
         assert_eq!(first.push_system_text("Answer in French.").err(), Some(SystemMessageError::First));
 
-        let mut after_assistant = Context::new();
+        let mut after_assistant = Context::new(Opening::None);
         after_assistant.push_user_text("hi");
         after_assistant.push_assistant_text("hello");
         assert_eq!(after_assistant.push_system_text("x").err(), Some(SystemMessageError::AfterAssistant));
 
         // Two in a row is accepted, which the live API confirms — so a chain of
         // them is well-placed as long as the chain itself is.
-        let mut adjacent = Context::new();
+        let mut adjacent = Context::new(Opening::None);
         adjacent.push_user_text("hi");
         adjacent.push_system_text("first").unwrap();
         adjacent.push_system_text("second").unwrap();
@@ -932,7 +1081,7 @@ mod tests {
     /// a legal conversation into an illegal request.
     #[test]
     fn a_system_message_followed_by_a_user_turn_is_caught_at_the_request() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("name a fruit");
         ctx.push_system_text("Answer in French.").unwrap();
         assert_eq!(ctx.misplaced_system_message(), None, "ending the array is legal");
@@ -956,11 +1105,11 @@ mod tests {
     #[test]
     fn every_documented_placement_rule_is_enforced() {
         // "A system message cannot be the first entry in messages."
-        assert_eq!(Context::new().push_system_text("x").err(), Some(SystemMessageError::First));
+        assert_eq!(Context::new(Opening::None).push_system_text("x").err(), Some(SystemMessageError::First));
 
         // "must immediately follow a user turn" — and a user turn carrying
         // tool_result blocks counts, which is the agentic-loop position.
-        let mut after_tool_result = Context::new();
+        let mut after_tool_result = Context::new(Opening::None);
         after_tool_result.push_user_text("run the tests");
         after_tool_result.push_assistant(vec![ContentBlock::tool_use("toolu_01", "run_tests", serde_json::json!({}))]);
         after_tool_result.push_tool_result("toolu_01", ToolResultContent::Text("12 passed".into()));
@@ -971,14 +1120,14 @@ mod tests {
         // entry between them is the assistant turn holding the `tool_use`, and a
         // system message may not follow an assistant turn, so that position is
         // exactly `AfterAssistant`.
-        let mut between = Context::new();
+        let mut between = Context::new(Opening::None);
         between.push_user_text("run the tests");
         between.push_assistant(vec![ContentBlock::tool_use("toolu_01", "run_tests", serde_json::json!({}))]);
         assert_eq!(between.push_system_text("x").err(), Some(SystemMessageError::AfterAssistant));
 
         // "must precede an assistant turn or end the array", checked at the
         // request because a later append can break it.
-        let mut then_user = Context::new();
+        let mut then_user = Context::new(Opening::None);
         then_user.push_user_text("hi");
         then_user.push_system_text("be terse").unwrap();
         then_user.push_user_text("again");
@@ -986,7 +1135,7 @@ mod tests {
 
         // "Consecutive system messages are accepted and treated as a single
         // system section, which follows the same placement rule as a whole."
-        let mut chain = Context::new();
+        let mut chain = Context::new(Opening::None);
         chain.push_user_text("hi");
         chain.push_system_text("first").unwrap();
         chain.push_system_text("second").unwrap();
@@ -1001,7 +1150,7 @@ mod tests {
     fn a_system_message_is_refused_on_a_model_that_does_not_accept_one() {
         use crate::request::{Request, RequestError};
 
-        let mut ctx = Context::new().with_system("you are helpful");
+        let mut ctx = Context::new(Opening::instruction("you are helpful"));
         ctx.push_user_text("name a fruit");
         ctx.push_system_text("Answer in French.").unwrap();
 
@@ -1021,7 +1170,7 @@ mod tests {
 
         // Without a system message the same models are fine, so the refusal is
         // about the pairing and not about the model.
-        let mut plain = Context::new();
+        let mut plain = Context::new(Opening::None);
         plain.push_user_text("name a fruit");
         assert!(Request::new(&plain, Model::sonnet_5(), 1024).is_ok());
     }
@@ -1031,7 +1180,7 @@ mod tests {
     /// set it on an inner content block instead`.
     #[test]
     fn a_breakpoint_lands_on_a_system_messages_inner_block() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user_text("hi");
         ctx.push_system_text("Answer in French.").unwrap();
         ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
@@ -1046,7 +1195,7 @@ mod tests {
     #[test]
     fn tool_flags_appear_only_when_set() {
         let plain = Tool::new("one", serde_json::json!({"type": "object"}));
-        let v = req(&Context::new().with_tools(vec![plain]));
+        let v = req(&Context::new(Opening::None).with_tools(vec![plain]));
         for field in ["defer_loading", "strict", "input_examples"] {
             assert!(v["tools"][0].get(field).is_none(), "{field} should be absent when unset");
         }
@@ -1054,7 +1203,7 @@ mod tests {
         let configured = Tool::new("two", serde_json::json!({"type": "object"}))
             .strict()
             .input_examples(vec![serde_json::json!({"city": "Paris"})]);
-        let v = req(&Context::new().with_tools(vec![configured]));
+        let v = req(&Context::new(Opening::None).with_tools(vec![configured]));
         assert_eq!(v["tools"][0]["strict"], true);
         assert_eq!(v["tools"][0]["input_examples"][0]["city"], "Paris");
     }
@@ -1065,15 +1214,15 @@ mod tests {
     #[test]
     fn deferring_every_tool_is_refused_at_the_request() {
         let deferred = || Tool::new("t", serde_json::json!({"type": "object"})).deferred();
-        let ctx = Context::new().with_tools(vec![deferred()]);
+        let ctx = Context::new(Opening::None).with_tools(vec![deferred()]);
         assert_eq!(
             crate::request::Request::new(&ctx, Model::opus_4_8(), 16).err(),
             Some(crate::request::RequestError::EveryToolDeferred { tools: 1 }),
         );
 
         // One undeferred tool is enough, and only the deferred one says so.
-        let ctx =
-            Context::new().with_tools(vec![Tool::new("eager", serde_json::json!({"type": "object"})), deferred()]);
+        let ctx = Context::new(Opening::None)
+            .with_tools(vec![Tool::new("eager", serde_json::json!({"type": "object"})), deferred()]);
         let v = req(&ctx);
         assert!(v["tools"][0].get("defer_loading").is_none());
         assert_eq!(v["tools"][1]["defer_loading"], true);
@@ -1085,7 +1234,7 @@ mod tests {
             Tool::new("one", serde_json::json!({"type": "object"})),
             Tool::new("two", serde_json::json!({"type": "object"})),
         ];
-        let v = req(&Context::new().with_tools_cached(CacheSlot::S1, tools, CacheTtl::OneHour).unwrap());
+        let v = req(&Context::new(Opening::None).with_tools_cached(CacheSlot::S1, tools, CacheTtl::OneHour).unwrap());
         assert!(v["tools"][0].get("cache_control").is_none());
         assert_eq!(v["tools"][1]["cache_control"]["ttl"], "1h");
     }
