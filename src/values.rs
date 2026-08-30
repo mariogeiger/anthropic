@@ -69,22 +69,24 @@ api_enum! {
     /// makes "an unknown role cannot reach the wire" a fact about the type rather
     /// than a promise in a doc comment.
     ///
-    /// `system` is deliberately absent. Anthropic does accept a
-    /// `{"role": "system"}` entry mid-conversation, but only on some models and
-    /// only under placement rules the API enforces with a 400 — it may not be
-    /// first, must follow a user turn or a server-tool assistant turn, must be
-    /// last or be followed by an assistant turn, and may not sit beside another
-    /// one. A `Role::System` this crate cannot place correctly would let those
-    /// rejections be written, which is the opposite of what this enum is for.
-    /// Adding the feature means a `push_system` that upholds those rules, plus the
-    /// shared system-content type and cache-slot position described in CLAUDE.md
-    /// §7 — not a third variant here.
+    /// All three roles a `messages[]` entry may carry, `system` included: a
+    /// mid-conversation instruction is a message with that role. See
+    /// [`crate::system`] for why it exists and
+    /// [`crate::context::Context::push_system`] for the placement rules.
+    ///
+    /// The role is *derived* from a [`crate::context::Message`] rather than
+    /// assignable on one, because the three roles do not admit the same content —
+    /// a system message takes text and tool changes and nothing else. So
+    /// [`crate::context::Message`] is an enum whose variant carries the content its
+    /// role admits, and this enum is what that variant reports.
     Role {
         /// `user`: the caller's turn. Tool results go here too, which is where the
         /// API expects them.
         User => "user",
         /// `assistant`: the model's own turn, replayed back into the conversation.
         Assistant => "assistant",
+        /// `system`: an instruction added partway through, after the cached prefix.
+        System => "system",
     }
 }
 
@@ -227,6 +229,37 @@ api_enum! {
 }
 
 api_enum! {
+    /// The `type` of a block inside a mid-conversation system message.
+    ///
+    /// Exactly the three the API accepts there, which is a *different* set from
+    /// the top-level system prompt's single `text` — hence a second enum rather
+    /// than a widened [`TextBlockType`]. See [`crate::system::SystemBlock`].
+    SystemBlockType {
+        /// An instruction.
+        Text => "text",
+        /// A tool offered from this point on.
+        ToolAddition => "tool_addition",
+        /// A tool withdrawn from this point on.
+        ToolRemoval => "tool_removal",
+    }
+}
+
+api_enum! {
+    /// How a [`crate::system::ToolChangeBlock`] names the tool it changes.
+    ///
+    /// Three ways, because a tool's identity depends on where it came from; see
+    /// [`crate::system::ToolReference`].
+    ToolReferenceType {
+        /// A tool the caller declared directly in `tools`.
+        Tool => "tool_reference",
+        /// One tool of an MCP server's toolset.
+        McpTool => "mcp_tool_reference",
+        /// Every tool of an MCP server's toolset.
+        McpToolset => "mcp_toolset_reference",
+    }
+}
+
+api_enum! {
     /// The `cache_control.type` of a breakpoint.
     CacheControlType {
         /// The only type the API currently supports.
@@ -276,15 +309,12 @@ mod tests {
 
     #[test]
     fn role_roundtrips_and_rejects_everything_else() {
-        for r in [Role::User, Role::Assistant] {
+        for r in [Role::User, Role::Assistant, Role::System] {
             assert_eq!(Role::from_str(r.as_str()), Some(r));
         }
         assert_eq!(Role::User.as_str(), "user");
         assert_eq!(Role::Assistant.as_str(), "assistant");
-        // `system` is accepted mid-conversation by some models, and deliberately
-        // absent here: this crate cannot yet place such a message legally, so
-        // naming the role would let an API rejection be written. See the type docs.
-        assert_eq!(Role::from_str("system"), None);
+        assert_eq!(Role::System.as_str(), "system");
         assert_eq!(Role::from_str("wizard"), None);
         // Serializing is the same string `as_str` gives.
         assert_eq!(serde_json::to_value(Role::Assistant).unwrap(), "assistant");
