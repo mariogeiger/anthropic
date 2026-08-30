@@ -16,6 +16,7 @@ Currently modeled: `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude
 - **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. A month is one of twelve variants, not a `u8` documented as 1–12; a temperature is a newtype, not an `f32` documented as 0–1.
 - **A role cannot carry content that role refuses.** `Message` is an enum whose variant *is* the role, so a system message holds only the text and tool changes the API accepts there — not an image, and not a tool result. There is no `role` field to set independently of the content.
 - **A checked constructor cannot be bypassed.** `Request` and `CountRequest` hold private fields behind readers, so `max_tokens` cannot be reassigned past the range check `Request::new` runs against the model's maximum.
+- **A system message cannot sit where the API forbids one.** `Context::messages` is private, so `push_system` is the only way one enters a conversation, and it refuses the first position outright — that position belongs to the top-level `system` field. `Request::new` refuses the rest: a placement whose successor is wrong, and a model that does not accept a mid-conversation system message at all, which today means Sonnet 5.
 
 ## What the crate covers
 

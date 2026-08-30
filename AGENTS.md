@@ -57,10 +57,23 @@ can follow mechanically — the existing entries are the pattern to match.
 Land each coherent piece as its own commit. Keep `README.md` true in the same
 commit that changes what it describes.
 
-Record where our deployment disagrees with the documented API. The crate follows
-Anthropic's documentation, so a feature our gateway refuses is still implemented,
-and the changelog and the item's documentation say plainly that it is refused
-today. Never write a test that requires the gateway to accept it.
+Record where our deployment disagrees with the documented API, in **both**
+directions, because the disagreement is not symmetric.
+
+A gateway that *refuses* something the API documents does not remove it: the
+crate still expresses the feature, and the changelog and the item's documentation
+say plainly that it is refused today. Never write a test that requires the
+gateway to accept it.
+
+A gateway that *accepts* something the API forbids proves nothing. A 200 is not
+evidence of legality, so a placement or per-model rule can only be established
+from the documentation, never from a successful probe. Measured 2026-08-30: our
+gateway accepts a leading `{"role": "system"}` message, which the documented API
+answers with a 400, and `/v1/messages/count_tokens` validates placement not at all
+— it accepted every illegal arrangement tried. The gateway *does* enforce the
+successor rule, so its permissiveness is specific rather than general, which is
+exactly why a probe cannot be trusted to map it. Use live probes to measure what
+the API *rejects* and how it words the rejection; that direction is informative.
 
 ## Deliberately out of scope
 

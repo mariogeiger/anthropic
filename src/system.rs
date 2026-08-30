@@ -15,6 +15,38 @@
 //! different content, and a type that admitted the union would let the API's
 //! refusal be written.
 //!
+//! # Why both positions exist
+//!
+//! The two look interchangeable and are not. Sending the same text in the
+//! top-level `system` field and as a leading `{"role": "system"}` message
+//! produces identical behaviour and identical `input_token` counts, which is what
+//! makes the question reasonable. They are nonetheless **disjoint by position**,
+//! and the documented rules say so twice.
+//!
+//! *By placement.* "A system message cannot be the first entry in `messages`. Use
+//! the top-level `system` field for instructions that apply from the very start."
+//! So the top-level field is the *only* legal home for an instruction that holds
+//! from the beginning, and a system message is the only home for one that begins
+//! partway through. Neither position can be spelled the other way, and the reason
+//! is the prompt cache: the top-level field sits near the start of the hashed
+//! prefix, so editing it re-processes the whole conversation, while a system
+//! message appends after the prefix and costs nothing. Measured: editing either
+//! the top-level field or a leading system message dropped
+//! `cache_read_input_tokens` to 0 after a 4,413-token write, whereas editing a
+//! system message at the end still read 4,407 from cache.
+//!
+//! *By model.* Mid-conversation system messages are documented as available on
+//! Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude Sonnet 5;
+//! use the top-level `system` field instead". The top-level field works on every
+//! model, so it is also the only *portable* position. See
+//! [`crate::model::ModelId::accepts_mid_conversation_system_message`] and
+//! [`crate::request::RequestError::MidConversationSystemMessageUnsupported`].
+//!
+//! Both rules are stated in
+//! <https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages>,
+//! and the documentation is the authority: a gateway may accept a shape the API
+//! forbids, so a 200 does not make it legal.
+//!
 //! # What each position admits
 //!
 //! The top-level `system` field takes text and nothing else. A system *message*

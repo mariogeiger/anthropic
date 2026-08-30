@@ -245,6 +245,30 @@ impl ModelId {
         }
     }
 
+    /// Whether this model accepts a `{"role": "system"}` entry inside `messages`.
+    ///
+    /// A closed list, not a tier rule: the feature is documented as available on
+    /// Fable 5, Mythos 5, Opus 4.8 and Opus 5, and *not* on Sonnet 5, where the
+    /// documentation says to use the top-level `system` field instead. Every model
+    /// the list omits is therefore `false` here, so adding a model states its
+    /// answer rather than inheriting a guess.
+    ///
+    /// Mid-conversation *tool* changes carry the same availability, and need no
+    /// second predicate: a [`crate::system::SystemBlock::ToolAddition`] or
+    /// `ToolRemoval` can only ride inside a system message, so refusing the
+    /// message refuses the tool change with it.
+    ///
+    /// [`crate::request::Request::new`] refuses a conversation holding one on a
+    /// model that answers `false`; see
+    /// [`crate::request::RequestError::MidConversationSystemMessageUnsupported`]
+    /// for why that is a runtime refusal rather than a type error.
+    pub fn accepts_mid_conversation_system_message(self) -> bool {
+        match self {
+            ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
+            ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
+        }
+    }
+
     /// Maximum output tokens in a single synchronous Messages API response.
     /// `Request::new` rejects `max_tokens` outside `1..=max_output_tokens()`.
     /// (The Message Batches API permits more on some models via a beta header,
