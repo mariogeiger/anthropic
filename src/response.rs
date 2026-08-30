@@ -94,6 +94,19 @@ impl Response {
         }))
     }
 
+    /// Every place the answer drew on, in block order.
+    ///
+    /// Empty unless the request enabled citations on a document or search result.
+    /// Flattened across blocks, because a caller rendering footnotes wants the
+    /// list; the per-block association is still in
+    /// [`crate::content::StreamedBlock::Text`] for one that wants to interleave.
+    pub fn citations(&self) -> impl Iterator<Item = &crate::document::Citation> {
+        self.blocks.iter().flat_map(|block| match block {
+            crate::content::StreamedBlock::Text { citations, .. } => citations.as_slice(),
+            _ => &[],
+        })
+    }
+
     /// The tool calls the model made, in block order.
     ///
     /// Inputs arrive whole here rather than as fragments, but they are still

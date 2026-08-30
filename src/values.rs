@@ -336,6 +336,41 @@ api_enum! {
 }
 
 api_enum! {
+    /// The `media_type` of a base64 document source. One variant: a base64
+    /// document is a PDF.
+    DocumentMediaType {
+        /// PDF.
+        Pdf => "application/pdf",
+    }
+}
+
+api_enum! {
+    /// The `media_type` of a plain-text document source.
+    PlainTextMediaType {
+        /// Plain text.
+        Text => "text/plain",
+    }
+}
+
+api_enum! {
+    roundtrip
+    /// The `type` of a [`crate::document::Citation`], which is to say how
+    /// precisely it points at what it cites.
+    CitationType {
+        /// A character range of a plain-text document.
+        CharLocation => "char_location",
+        /// A page range of a PDF.
+        PageLocation => "page_location",
+        /// A block range of a structured document.
+        ContentBlockLocation => "content_block_location",
+        /// A block range of a search result.
+        SearchResultLocation => "search_result_location",
+        /// A result of the API's own web search.
+        WebSearchResultLocation => "web_search_result_location",
+    }
+}
+
+api_enum! {
     /// The `cache_control.type` of a breakpoint.
     CacheControlType {
         /// The only type the API currently supports.

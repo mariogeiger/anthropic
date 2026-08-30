@@ -20,15 +20,29 @@
 //! # Unrecognized kinds are not failures
 //!
 //! Server tools introduce block kinds (`server_tool_use`,
-//! `web_search_tool_result`) and delta kinds (`citations_delta`) that a caller
-//! using only its own tools never sees. Anthropic adds more over time. So both
-//! have an `Unmodeled` variant, for the same reason
+//! `web_search_tool_result`) that a caller using only its own tools never sees,
+//! and Anthropic adds more over time. So both blocks and deltas have an
+//! `Unmodeled` variant, for the same reason
 //! [`crate::stream::StreamEvent::Unmodeled`] exists: a well-formed thing this
 //! crate does not know is not a broken frame.
 
 use serde_json::Value;
 
-use crate::frame::{FrameError, optional_string, require_str};
+use crate::document::Citation;
+use crate::frame::{FrameError, optional_string, require, require_str};
+
+/// A `citations` array as either direction carries it.
+///
+/// Absent, null, and empty all mean "cited nothing", so they decode alike — a
+/// stream announces a text block with no citations at all and sends them as
+/// deltas, while a response carries the finished list here.
+fn decode_citations(citations: Option<&Value>) -> Result<Vec<Citation>, FrameError> {
+    match citations {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(citations)) => citations.iter().map(Citation::decode).collect(),
+        Some(_) => Err(FrameError::WrongType { field: "citations", expected: "an array" }),
+    }
+}
 
 // ── Tool input ───────────────────────────────────────────────────────────────
 
@@ -128,10 +142,18 @@ impl ToolInput {
 /// and carries cache-breakpoint metadata. This is what came back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamedBlock {
-    /// Answer text, grown by `text_delta`.
+    /// Answer text, grown by `text_delta` and, where the request enabled
+    /// citations, by `citations_delta`.
     Text {
         /// The text so far, or all of it once the block has stopped.
         text: String,
+        /// Where this text came from, for a block the model grounded in a cited
+        /// document or search result.
+        ///
+        /// Empty unless the request enabled citations on some block. Grown by
+        /// `citations_delta`, which appends exactly as every other delta does, so
+        /// the citations arrive in the order the model emitted them.
+        citations: Vec<Citation>,
     },
     /// A thinking block, grown by `thinking_delta` and signed by
     /// `signature_delta`.
@@ -191,7 +213,7 @@ impl StreamedBlock {
     /// into an answer would present it as one.
     pub fn text(&self) -> Option<&str> {
         match self {
-            StreamedBlock::Text { text } => Some(text),
+            StreamedBlock::Text { text, .. } => Some(text),
             _ => None,
         }
     }
@@ -202,7 +224,13 @@ impl StreamedBlock {
             return Err(FrameError::WrongType { field: "content_block", expected: "an object" });
         }
         Ok(match require_str(block, "type")? {
-            "text" => StreamedBlock::Text { text: optional_string(block, "text") },
+            "text" => StreamedBlock::Text {
+                text: optional_string(block, "text"),
+                // A non-streamed response carries the finished citations here; a
+                // stream announces an empty block and sends them as deltas. One
+                // rule serves both, because absent and empty are the same state.
+                citations: decode_citations(block.get("citations"))?,
+            },
             "thinking" => StreamedBlock::Thinking {
                 thinking: optional_string(block, "thinking"),
                 signature: optional_string(block, "signature"),
@@ -225,7 +253,10 @@ impl StreamedBlock {
     /// delta kind with its block kind.
     pub fn apply(&mut self, delta: &BlockDelta) {
         match (self, delta) {
-            (StreamedBlock::Text { text }, BlockDelta::Text { delta }) => text.push_str(delta),
+            (StreamedBlock::Text { text, .. }, BlockDelta::Text { delta }) => text.push_str(delta),
+            (StreamedBlock::Text { citations, .. }, BlockDelta::Citations { citation }) => {
+                citations.push(citation.clone());
+            }
             (StreamedBlock::Thinking { thinking, .. }, BlockDelta::Thinking { delta }) => thinking.push_str(delta),
             (StreamedBlock::Thinking { signature, .. }, BlockDelta::Signature { delta }) => signature.push_str(delta),
             (StreamedBlock::ToolUse { input, .. }, BlockDelta::InputJson { partial_json }) => {
@@ -266,7 +297,15 @@ pub enum BlockDelta {
         /// The fragment to append.
         partial_json: String,
     },
-    /// A delta kind this crate does not model, such as `citations_delta`.
+    /// `citations_delta`: one more place the text block drew on.
+    ///
+    /// Whole per delta, unlike the text and tool-input deltas: a citation arrives
+    /// complete and is appended to the block's list.
+    Citations {
+        /// The citation to append.
+        citation: Citation,
+    },
+    /// A delta kind this crate does not model.
     Unmodeled {
         /// The delta's `type`.
         kind: String,
@@ -281,6 +320,7 @@ impl BlockDelta {
             BlockDelta::Thinking { .. } => "thinking_delta",
             BlockDelta::Signature { .. } => "signature_delta",
             BlockDelta::InputJson { .. } => "input_json_delta",
+            BlockDelta::Citations { .. } => "citations_delta",
             BlockDelta::Unmodeled { kind } => kind,
         }
     }
@@ -297,6 +337,7 @@ impl BlockDelta {
             "input_json_delta" => {
                 BlockDelta::InputJson { partial_json: require_str(delta, "partial_json")?.to_owned() }
             }
+            "citations_delta" => BlockDelta::Citations { citation: Citation::decode(require(delta, "citation")?)? },
             other => BlockDelta::Unmodeled { kind: other.to_owned() },
         })
     }
@@ -439,9 +480,60 @@ mod tests {
         assert_eq!(block, StreamedBlock::Unmodeled { kind: "web_search_tool_result".to_owned() });
         assert_eq!(block.kind(), "web_search_tool_result");
 
-        let delta = BlockDelta::decode(&json!({"type": "citations_delta", "citation": {}})).unwrap();
-        assert_eq!(delta, BlockDelta::Unmodeled { kind: "citations_delta".to_owned() });
-        assert_eq!(delta.kind(), "citations_delta");
+        let delta = BlockDelta::decode(&json!({"type": "constellation_delta"})).unwrap();
+        assert_eq!(delta, BlockDelta::Unmodeled { kind: "constellation_delta".to_owned() });
+        assert_eq!(delta.kind(), "constellation_delta");
+    }
+
+    /// A captured `citations_delta` and the text it grounds. The citation arrived
+    /// *first* on the live wire, which is why it is appended rather than attached to
+    /// text already present.
+    #[test]
+    fn a_captured_citation_delta_grounds_the_text_that_follows_it() {
+        let mut block = StreamedBlock::decode(&json!({"citations": [], "type": "text", "text": ""})).unwrap();
+        let citation = BlockDelta::decode(&json!({
+            "type": "citations_delta",
+            "citation": {"type": "char_location", "cited_text": "At night it is black. ", "document_index": 0,
+                         "document_title": "Field guide", "start_char_index": 32, "end_char_index": 54}
+        }))
+        .unwrap();
+        assert_eq!(citation.kind(), "citations_delta");
+        block.apply(&citation);
+        for piece in ["At night the s", "ky is black."] {
+            block.apply(&BlockDelta::Text { delta: piece.to_owned() });
+        }
+
+        let StreamedBlock::Text { text, citations } = &block else { panic!("expected a text block") };
+        assert_eq!(text, "At night the sky is black.");
+        assert_eq!(citations.len(), 1);
+        assert_eq!(citations[0].cited_text(), Some("At night it is black. "));
+        assert_eq!(block.text(), Some("At night the sky is black."), "citations do not join the answer text");
+    }
+
+    /// A response carries its citations whole; absent, null, and empty agree.
+    #[test]
+    fn a_finished_text_block_keeps_its_citations_and_an_absent_list_is_empty() {
+        let block = StreamedBlock::decode(&json!({
+            "type": "text", "text": "The sky is black at night.",
+            "citations": [{"type": "char_location", "cited_text": "At night it is black.", "document_index": 0,
+                           "start_char_index": 32, "end_char_index": 53}]
+        }))
+        .unwrap();
+        let StreamedBlock::Text { citations, .. } = &block else { panic!("expected a text block") };
+        assert_eq!(citations.len(), 1);
+
+        for absent in [json!({"type": "text", "text": "x"}), json!({"type": "text", "text": "x", "citations": null})] {
+            let block = StreamedBlock::decode(&absent).unwrap();
+            assert!(matches!(&block, StreamedBlock::Text { citations, .. } if citations.is_empty()));
+        }
+        assert!(matches!(
+            StreamedBlock::decode(&json!({"type": "text", "text": "x", "citations": "nope"})),
+            Err(FrameError::WrongType { field: "citations", .. })
+        ));
+        assert!(matches!(
+            BlockDelta::decode(&json!({"type": "citations_delta"})),
+            Err(FrameError::MissingField { field: "citation" })
+        ));
     }
 
     /// A delta addressed to a block of another kind is ignored rather than

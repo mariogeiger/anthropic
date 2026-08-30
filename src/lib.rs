@@ -12,6 +12,8 @@
 //! # Outbound
 //!
 //! * [`context`] — cache-safe, append-only conversation state.
+//! * [`document`] — source material the model may quote, and the citations it
+//!   quotes it with.
 //! * [`model`] — one type per model, carrying only the parameters it accepts.
 //! * [`request`] — per-call parameters and the `/v1/messages` body.
 //! * [`system`] — system content: the top-level prompt, and an instruction added
@@ -76,6 +78,7 @@
 
 pub mod content;
 pub mod context;
+pub mod document;
 pub mod frame;
 pub mod model;
 pub mod request;

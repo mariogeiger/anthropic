@@ -1,10 +1,11 @@
 //! Decoding real captured traffic.
 //!
 //! Every file in `tests/captured/` is a verbatim body from a live Messages
-//! endpoint, saved on 2026-08-29 from `aws/anthropic/bedrock-claude-opus-5` via
+//! endpoint, saved from `aws/anthropic/bedrock-claude-opus-5` via
 //! the NVIDIA inference gateway. Nothing here is invented: the frame order, the
 //! field spellings, the fields the documentation does not mention, and the empty
-//! thinking block that `display: "omitted"` produces are all as they arrived.
+//! thinking block that `display: "omitted"` produces are all as they arrived. All
+//! but `citations.sse` were saved on 2026-08-29; that one on 2026-08-30.
 //!
 //! Two files were trimmed, and only by dropping repetition: long runs of
 //! `thinking_delta` and `text_delta` frames were cut to the first few per block,
@@ -16,6 +17,7 @@
 //! message, and that the failure modes are the ones the types promise.
 
 use anthropic::content::StreamedBlock;
+use anthropic::document::Citation;
 use anthropic::frame::data_payload;
 use anthropic::response::Response;
 use anthropic::settle::{Outcome, SettleError, Settling};
@@ -38,7 +40,59 @@ const THINKING_SUMMARIZED: &str = include_str!("captured/thinking-summarized.sse
 const THINKING_OMITTED: &str = include_str!("captured/thinking-omitted.sse");
 const CACHE_WRITE: &str = include_str!("captured/cache-write.sse");
 const CACHE_READ: &str = include_str!("captured/cache-read.sse");
+const CITATIONS: &str = include_str!("captured/citations.sse");
 const RESPONSE: &str = include_str!("captured/response.json");
+
+/// A cited answer, settled from the real stream: a plain-text document with
+/// citations enabled, and the model grounding two of its three text blocks.
+///
+/// Note the frame order. The `citations_delta` for a block arrives *before* the
+/// `text_delta`s it grounds, which is why a citation is appended to its block
+/// rather than attached to text already present — accumulating in arrival order is
+/// what makes that a non-issue.
+#[test]
+fn a_captured_cited_stream_grounds_its_text_in_the_document() {
+    let settled = accumulate(CITATIONS).settle().unwrap();
+
+    assert_eq!(settled.stop_reason(), Some(StopReason::EndTurn));
+    assert!(settled.text().contains("At night the sky is black."));
+
+    // Four text blocks: a cited claim, an uncited aside, a second cited claim, and
+    // its uncited tail. Only the grounded ones carry citations, and the API
+    // announces exactly those with a `citations` array.
+    let cited: Vec<_> = settled
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            StreamedBlock::Text { citations, .. } if !citations.is_empty() => Some(citations),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(settled.blocks.len(), 4, "the model split its answer into four text blocks");
+    assert_eq!(cited.len(), 2, "two of the four are grounded");
+
+    let Citation::CharLocation { cited_text, document_title, start_char_index, end_char_index, document_index } =
+        &cited[0][0]
+    else {
+        panic!("a plain-text document is cited by character range")
+    };
+    assert_eq!(cited_text, "At night it is black. ");
+    assert_eq!(document_title.as_deref(), Some("Field guide"));
+    assert_eq!(*document_index, 0);
+    assert_eq!((*start_char_index, *end_char_index), (32, 54), "the exact characters in the document");
+
+    // The uncited block is a text block like any other; it simply cites nothing.
+    let uncited = settled
+        .blocks
+        .iter()
+        .filter(|block| matches!(block, StreamedBlock::Text { citations, .. } if citations.is_empty()))
+        .count();
+    assert_eq!(uncited, 2, "the aside and the closing tail cite nothing");
+
+    // The second citation grounds the daytime claim, in the same document.
+    assert_eq!(cited[1][0].cited_text(), Some("The sky is blue during the day. "));
+    assert_eq!(cited[1][0].kind(), "char_location");
+}
 
 /// A forced tool call, settled from the real stream. The input arrived in six
 /// fragments, none of which is valid JSON on its own.
@@ -160,7 +214,7 @@ fn a_captured_response_body_decodes() {
 /// against every prefix of real traffic rather than one hand-made case.
 #[test]
 fn no_prefix_of_a_captured_stream_settles_before_its_terminal_frame() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
         let payloads: Vec<&str> = body.lines().filter_map(data_payload).collect();
         for cut in 0..payloads.len() {
             let mut settling = Settling::new();
@@ -252,7 +306,7 @@ fn unknown_events_interleaved_through_a_captured_stream_change_nothing() {
 /// `Unmodeled` event: the modeled set covers real traffic completely.
 #[test]
 fn every_captured_frame_decodes_into_a_modeled_event() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
         for payload in body.lines().filter_map(data_payload) {
             let event = StreamEvent::decode(payload).expect(payload);
             assert!(
@@ -269,7 +323,7 @@ fn every_captured_frame_decodes_into_a_modeled_event() {
 /// checking once rather than trusting.
 #[test]
 fn the_sse_event_names_agree_with_the_payload_types() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
         let mut named: Option<&str> = None;
         for line in body.lines() {
             if let Some(name) = line.strip_prefix("event: ") {
