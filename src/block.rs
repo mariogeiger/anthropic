@@ -321,10 +321,14 @@ impl ContentBlock {
         Self::Document(DocumentBlock::new(source))
     }
     /// Source material the model may quote, emitting a citation where it does.
+    ///
+    /// Takes the source rather than a built [`DocumentBlock`] for the common case;
+    /// use [`Self::Document`] directly to title or describe it first.
     pub fn document_cited(source: DocumentSource) -> Self {
         Self::Document(DocumentBlock::cited(source))
     }
-    /// A search result the model may quote.
+    /// A search result the model may read, and quote where it was built with
+    /// [`SearchResultBlock::cited`].
     pub fn search_result(block: SearchResultBlock) -> Self {
         Self::SearchResult(block)
     }
