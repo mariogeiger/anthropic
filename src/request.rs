@@ -57,6 +57,18 @@ pub enum RequestError {
         /// The model's maximum synchronous output.
         max_output: u32,
     },
+    /// A mid-conversation system message must end `messages` or be followed by an
+    /// assistant turn; the API answers `role 'system' must precede an 'assistant'
+    /// message or end the array`.
+    ///
+    /// Checked here rather than at
+    /// [`crate::context::Context::push_system`] because it is a property of the
+    /// *finished* history: an append that was legal becomes illegal when a user
+    /// turn is appended after it, so only the request knows.
+    SystemMessageNotFollowedByAssistant {
+        /// Index in `messages` of the offending system message.
+        at: usize,
+    },
 }
 
 impl std::fmt::Display for RequestError {
@@ -67,6 +79,9 @@ impl std::fmt::Display for RequestError {
             }
             RequestError::MaxTokensOutOfRange { max_tokens, max_output } => {
                 write!(f, "max_tokens ({max_tokens}) must be in 1..={max_output} for this model")
+            }
+            RequestError::SystemMessageNotFollowedByAssistant { at } => {
+                write!(f, "the system message at index {at} must end the conversation or precede an assistant turn")
             }
         }
     }
@@ -103,6 +118,12 @@ impl<'a> Request<'a> {
         let max_output = model.id().max_output_tokens();
         if max_tokens == 0 || max_tokens > max_output {
             return Err(RequestError::MaxTokensOutOfRange { max_tokens, max_output });
+        }
+        // A system message is legal only at the end or immediately before an
+        // assistant turn, and that is decidable only now that the history is
+        // final — see `RequestError::SystemMessageNotFollowedByAssistant`.
+        if let Some(at) = context.misplaced_system_message() {
+            return Err(RequestError::SystemMessageNotFollowedByAssistant { at });
         }
         if let Model::Haiku4_5(h) = &model
             && let Haiku4_5Thinking::Enabled { budget_tokens } = h.thinking

@@ -14,6 +14,8 @@
 //! * [`context`] — cache-safe, append-only conversation state.
 //! * [`model`] — one type per model, carrying only the parameters it accepts.
 //! * [`request`] — per-call parameters and the `/v1/messages` body.
+//! * [`system`] — system content: the top-level prompt, and an instruction added
+//!   mid-conversation without disturbing the cached prefix.
 //! * [`tool_choice`] — whether, and which, tool the model must call.
 //!
 //! # Inbound
@@ -80,6 +82,7 @@ pub mod request;
 pub mod response;
 pub mod settle;
 pub mod stream;
+pub mod system;
 pub mod tool_choice;
 pub mod usage;
 pub mod values;

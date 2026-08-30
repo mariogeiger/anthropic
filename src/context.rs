@@ -20,23 +20,29 @@
 //! Every wire value drawn from a closed API vocabulary is the matching enum from
 //! [`crate::values`], never the string it serializes to. A `&'static str` field is
 //! writable with any string; an enum field is writable only with a value the API
-//! accepts. That is why [`Message::role`] is a [`Role`] and why an unwritable
-//! invalid role is a property of the type:
+//! accepts.
+//!
+//! [`Message`] goes one step further: the role is not a field at all. The three
+//! roles do not admit the same content — a system message takes text and tool
+//! changes only — so the role is the *variant*, and [`Message::role`] derives the
+//! wire value from it. A role beside a free content list cannot be written:
 //!
 //! ```compile_fail
 //! use anthropic::context::{ContentBlock, Message};
 //!
-//! // No such role exists to name, so this does not compile.
-//! let _ = Message { role: anthropic::Role::Wizard, content: vec![] };
+//! // There is no `role` field to set, so this does not compile.
+//! let _ = Message { role: anthropic::Role::System, content: Vec::<ContentBlock>::new() };
 //! ```
 //!
 //! ```compile_fail
 //! use anthropic::context::{ContentBlock, Message};
 //!
-//! // Nor can the wire string be written directly: the field is not a string.
-//! let _ = Message { role: "wizard", content: Vec::<ContentBlock>::new() };
+//! // Nor can a system message hold an ordinary content block: its variant takes
+//! // `SystemBlock`s, which have no image or tool-result form.
+//! let _ = Message::System(vec![ContentBlock::text("no")]);
 //! ```
 
+use crate::system::SystemBlock;
 use crate::{CacheControlType, CacheTtl, ImageMediaType, Role, TextBlockType};
 use serde::Serialize;
 use serde_json::Value;
@@ -173,12 +179,24 @@ pub enum ToolResultItem {
 // `CacheControl` into place. The only path is through a `CacheSlot`.
 
 /// A text block to send.
+///
+/// The one block type both a message and a system message hold, which is why it
+/// is a struct shared by [`ContentBlock::Text`] and
+/// [`crate::system::SystemBlock::Text`] rather than duplicated per position.
 #[derive(Debug, Clone, Serialize)]
 pub struct TextBlock {
     /// The text.
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
+}
+
+impl TextBlock {
+    /// Text with no cache breakpoint. A breakpoint is placed only through a
+    /// [`CacheSlot`], so there is no constructor that takes one.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into(), cache_control: None }
+    }
 }
 
 /// An image block to send.
@@ -270,7 +288,7 @@ pub enum ContentBlock {
 impl ContentBlock {
     /// A text block.
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text(TextBlock { text: text.into(), cache_control: None })
+        Self::Text(TextBlock::new(text))
     }
     /// An image block.
     pub fn image(source: ImageSource) -> Self {
@@ -299,7 +317,7 @@ impl ContentBlock {
         })
     }
 
-    fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
+    pub(crate) fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
         match self {
             Self::Text(b) => &mut b.cache_control,
             Self::Image(b) => &mut b.cache_control,
@@ -313,21 +331,106 @@ impl ContentBlock {
 
 // ── Messages, tools, system ──────────────────────────────────────────────────
 
-/// One turn of the conversation.
+/// One entry of the conversation.
 ///
-/// Public fields, because both of them are already exact: [`Role`] has no invalid
-/// value to write, and any block sequence is a legal `content` array. Readers plus
-/// constructors would hide nothing the compiler is not already checking, and they
-/// would cost the pattern matching a caller wants when replaying history. What is
-/// *not* public is `cache_control` on the blocks inside — that one carries a
+/// An enum rather than a `role` field beside a `content` field, because the three
+/// roles do not admit the same content: a system message takes text and tool
+/// changes only, and the API answers `role 'system' supports text,
+/// tool_addition, and tool_removal blocks only` for anything else. A struct with
+/// both fields public would let that rejection be written; here the variant
+/// carries exactly the blocks its role admits, and [`Self::role`] derives the wire
+/// value.
+///
+/// The blocks themselves stay public, because any sequence of them is a legal
+/// `content` array and pattern matching over replayed history is worth keeping.
+/// What is *not* public is `cache_control` on the blocks inside — that carries a
 /// cross-message invariant, so it stays crate-private and reachable only through a
 /// [`CacheSlot`].
-#[derive(Debug, Clone, Serialize)]
-pub struct Message {
-    /// Whose turn it is.
-    pub role: Role,
-    /// The turn's content blocks.
-    pub content: Vec<ContentBlock>,
+#[derive(Debug, Clone)]
+pub enum Message {
+    /// The caller's turn. Tool results go here too.
+    User(
+        /// The turn's content blocks.
+        Vec<ContentBlock>,
+    ),
+    /// The model's own turn, replayed back into the conversation.
+    Assistant(
+        /// The turn's content blocks.
+        Vec<ContentBlock>,
+    ),
+    /// An instruction added partway through, after the cached prefix. See
+    /// [`crate::system`].
+    System(
+        /// The instruction's blocks. Never empty: the API answers `system content
+        /// must contain at least one block`, and [`Context::push_system`] refuses
+        /// an empty one before it commits.
+        Vec<SystemBlock>,
+    ),
+}
+
+/// The wire shape both content kinds share: a role beside its blocks.
+#[derive(Serialize)]
+struct MessageWire<'a, B> {
+    role: Role,
+    content: &'a Vec<B>,
+}
+
+impl Serialize for Message {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // The role is written from `role()` rather than stored, so it cannot
+        // disagree with the variant that decides what content is legal.
+        match self {
+            Message::User(content) | Message::Assistant(content) => {
+                MessageWire { role: self.role(), content }.serialize(s)
+            }
+            Message::System(content) => MessageWire { role: self.role(), content }.serialize(s),
+        }
+    }
+}
+
+impl Message {
+    /// Whose entry this is.
+    pub fn role(&self) -> Role {
+        match self {
+            Message::User(_) => Role::User,
+            Message::Assistant(_) => Role::Assistant,
+            Message::System(_) => Role::System,
+        }
+    }
+
+    /// The entry's blocks, for the two roles that carry [`ContentBlock`]s.
+    /// `None` on a system message, whose blocks are [`SystemBlock`]s — a
+    /// different set, which is the whole reason this type is an enum.
+    pub fn content(&self) -> Option<&[ContentBlock]> {
+        match self {
+            Message::User(content) | Message::Assistant(content) => Some(content),
+            Message::System(_) => None,
+        }
+    }
+
+    /// A system message's blocks. `None` on the other two roles.
+    pub fn system_content(&self) -> Option<&[SystemBlock]> {
+        match self {
+            Message::System(content) => Some(content),
+            Message::User(_) | Message::Assistant(_) => None,
+        }
+    }
+
+    fn cache_control_at(&mut self, block: usize) -> Option<&mut Option<CacheControl>> {
+        match self {
+            Message::User(content) | Message::Assistant(content) => {
+                content.get_mut(block).map(ContentBlock::cache_control_mut)
+            }
+            Message::System(content) => content.get_mut(block).map(SystemBlock::cache_control_mut),
+        }
+    }
+
+    fn block_count(&self) -> usize {
+        match self {
+            Message::User(content) | Message::Assistant(content) => content.len(),
+            Message::System(content) => content.len(),
+        }
+    }
 }
 
 /// One tool the model may call.
@@ -446,6 +549,43 @@ impl std::fmt::Display for AnchorError {
 
 impl std::error::Error for AnchorError {}
 
+/// Why a mid-conversation system message could not be appended.
+///
+/// Each variant is a placement rule the API enforces with a 400, refused here
+/// before the request is built. The rule about what must *follow* the message is
+/// not here, because no append can decide it — see
+/// [`crate::request::RequestError::SystemMessageNotFollowedByAssistant`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SystemMessageError {
+    /// No blocks. The API answers `system content must contain at least one
+    /// block`; a system message says something or it is not one.
+    Empty,
+    /// It would be the first entry, with no user turn for it to follow. A
+    /// conversation that opens with an instruction has a system *prompt*, which is
+    /// [`Context::with_system`] and is cached better anyway.
+    First,
+    /// It would follow an assistant turn. The API accepts one only after a user
+    /// turn, or after an assistant turn ending in a server tool result — a block
+    /// this crate cannot yet build, so no assistant tail it produces qualifies.
+    AfterAssistant,
+}
+
+impl std::fmt::Display for SystemMessageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SystemMessageError::Empty => write!(f, "a system message must carry at least one block"),
+            SystemMessageError::First => {
+                write!(f, "a system message cannot be first; use `with_system` for a system prompt")
+            }
+            SystemMessageError::AfterAssistant => {
+                write!(f, "a system message must follow a user turn, not an assistant turn")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SystemMessageError {}
+
 // ── Context ──────────────────────────────────────────────────────────────────
 
 /// The conversation, and the cache invariants that hold over it.
@@ -510,28 +650,59 @@ impl Context {
 
     // ── Append-only evolution ───────────────────────────────────────────────
 
-    fn push(&mut self, role: Role, content: Vec<ContentBlock>) {
-        self.messages.push(Message { role, content });
-    }
     /// Appends a user turn.
     pub fn push_user(&mut self, blocks: Vec<ContentBlock>) {
-        self.push(Role::User, blocks);
+        self.messages.push(Message::User(blocks));
     }
     /// Appends an assistant turn — the model's own reply, replayed.
     pub fn push_assistant(&mut self, blocks: Vec<ContentBlock>) {
-        self.push(Role::Assistant, blocks);
+        self.messages.push(Message::Assistant(blocks));
     }
     /// Appends a user turn of one text block.
     pub fn push_user_text(&mut self, text: impl Into<String>) {
-        self.push(Role::User, vec![ContentBlock::text(text)]);
+        self.push_user(vec![ContentBlock::text(text)]);
     }
     /// Appends an assistant turn of one text block.
     pub fn push_assistant_text(&mut self, text: impl Into<String>) {
-        self.push(Role::Assistant, vec![ContentBlock::text(text)]);
+        self.push_assistant(vec![ContentBlock::text(text)]);
     }
     /// Appends a tool result as a user turn, which is where the API expects one.
     pub fn push_tool_result(&mut self, tool_use_id: impl Into<String>, content: ToolResultContent) {
-        self.push(Role::User, vec![ContentBlock::tool_result(tool_use_id, content)]);
+        self.push_user(vec![ContentBlock::tool_result(tool_use_id, content)]);
+    }
+
+    /// Appends a mid-conversation system message: an instruction, or a tool
+    /// offered or withdrawn, from this point in the conversation onwards.
+    ///
+    /// Cache-safe by construction, which is the reason to prefer it over rewriting
+    /// the system prompt: it appends, so every byte before it is unchanged and the
+    /// cached prefix still matches. See [`crate::system`].
+    ///
+    /// The API enforces placement rules with a 400, and the two that can be
+    /// decided from the history so far are checked here — see
+    /// [`SystemMessageError`]. The remaining one is "must end the array or precede
+    /// an assistant turn", which no append can decide because a later append can
+    /// break it; [`crate::request::Request::new`] checks that one, where the
+    /// history is final.
+    pub fn push_system(&mut self, blocks: Vec<SystemBlock>) -> Result<(), SystemMessageError> {
+        if blocks.is_empty() {
+            return Err(SystemMessageError::Empty);
+        }
+        match self.messages.last() {
+            None => return Err(SystemMessageError::First),
+            // An assistant turn ending in a server tool use is also legal, but
+            // this crate cannot yet build a server-tool block, so no assistant
+            // tail it can produce satisfies the rule.
+            Some(Message::Assistant(_)) => return Err(SystemMessageError::AfterAssistant),
+            Some(Message::User(_) | Message::System(_)) => {}
+        }
+        self.messages.push(Message::System(blocks));
+        Ok(())
+    }
+
+    /// Appends a mid-conversation system message of one instruction.
+    pub fn push_system_text(&mut self, text: impl Into<String>) -> Result<(), SystemMessageError> {
+        self.push_system(vec![SystemBlock::text(text)])
     }
 
     // ── Cache slot ops ──────────────────────────────────────────────────────
@@ -591,16 +762,30 @@ impl Context {
         self.slots.iter().filter(|s| s.is_some()).count()
     }
 
-    /// How many turns the conversation holds.
+    /// How many entries the conversation holds.
     pub fn message_count(&self) -> usize {
         self.messages.len()
+    }
+
+    /// Where a system message sits that neither ends the conversation nor
+    /// precedes an assistant turn, if any.
+    ///
+    /// The half of the placement rules an append cannot decide, because appending
+    /// a user turn after a legal system message makes it illegal. Read by
+    /// [`crate::request::Request::new`], where the history is final.
+    pub(crate) fn misplaced_system_message(&self) -> Option<usize> {
+        self.messages.iter().enumerate().find_map(|(at, message)| {
+            let misplaced = matches!(message, Message::System(_))
+                && !matches!(self.messages.get(at + 1), None | Some(Message::Assistant(_)));
+            misplaced.then_some(at)
+        })
     }
 
     // ── Internals ───────────────────────────────────────────────────────────
 
     fn tail_position(&self) -> Result<(usize, usize), RollCacheError> {
         let m = self.messages.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
-        let b = self.messages[m].content.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
+        let b = self.messages[m].block_count().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
         Ok((m, b))
     }
 
@@ -631,8 +816,8 @@ impl Context {
                 }
             }
             SlotLocation::Message { msg, block } => {
-                if let Some(b) = self.messages.get_mut(msg).and_then(|m| m.content.get_mut(block)) {
-                    *b.cache_control_mut() = cc;
+                if let Some(slot) = self.messages.get_mut(msg).and_then(|m| m.cache_control_at(block)) {
+                    *slot = cc;
                 }
             }
         }
@@ -797,13 +982,108 @@ mod tests {
         assert_eq!(v["messages"][1]["role"], "assistant");
         // A tool result is a user turn, which is where the API expects one.
         assert_eq!(v["messages"][2]["role"], "user");
-        // The typed field and the wire string are the same value in two forms.
-        assert_eq!(ctx.messages[0].role, Role::User);
-        assert_eq!(ctx.messages[1].role, Role::Assistant);
+        // The role is derived from the variant, and is the same value the wire
+        // string names.
+        assert_eq!(ctx.messages[0].role(), Role::User);
+        assert_eq!(ctx.messages[1].role(), Role::Assistant);
         assert_eq!(Role::User.as_str(), "user");
         assert_eq!(Role::Assistant.as_str(), "assistant");
-        // `system` is not a role this crate can name; see the `Role` docs.
-        assert_eq!(Role::from_str("system"), None);
+    }
+
+    /// A mid-conversation system message: appended after the prefix, so nothing
+    /// before it moves and the cache still matches.
+    #[test]
+    fn a_system_message_reaches_the_wire_after_the_turn_it_follows() {
+        let mut ctx = Context::new().with_system("you are helpful");
+        ctx.push_user_text("name a fruit");
+        ctx.push_system_text("Answer in French.").unwrap();
+        let v = req(&ctx);
+        assert_eq!(v["system"], "you are helpful", "the cached prompt is untouched");
+        assert_eq!(v["messages"][1]["role"], "system");
+        assert_eq!(v["messages"][1]["content"][0], serde_json::json!({"type": "text", "text": "Answer in French."}));
+        assert_eq!(ctx.messages[1].role(), Role::System);
+        assert_eq!(ctx.messages[1].system_content().unwrap().len(), 1);
+        assert!(ctx.messages[1].content().is_none(), "a system message holds SystemBlocks, not ContentBlocks");
+    }
+
+    /// A tool withdrawn mid-conversation, which leaves `tools` byte-identical and
+    /// so leaves the tools cache warm.
+    #[test]
+    fn a_tool_change_rides_in_a_system_message_without_touching_the_tool_definitions() {
+        use crate::system::{SystemBlock, ToolReference};
+        let tools = vec![Tool::new("get_time", serde_json::json!({"type": "object"}))];
+        let mut ctx = Context::new().with_tools(tools);
+        ctx.push_user_text("what time is it");
+        ctx.push_system(vec![
+            SystemBlock::text("The clock is offline."),
+            SystemBlock::tool_removal(ToolReference::tool("get_time")),
+        ])
+        .unwrap();
+        let v = req(&ctx);
+        assert_eq!(v["tools"][0]["name"], "get_time", "the definition stays, so its cache stays");
+        assert_eq!(v["messages"][1]["content"][1]["type"], "tool_removal");
+        assert_eq!(v["messages"][1]["content"][1]["tool"]["name"], "get_time");
+    }
+
+    /// The placement rules the API enforces with a 400, refused before the request
+    /// is built. Each is stated by the server; see `SystemMessageError`.
+    #[test]
+    fn a_system_message_refuses_the_placements_the_api_rejects() {
+        let mut empty = Context::new();
+        empty.push_user_text("hi");
+        assert_eq!(empty.push_system(vec![]), Err(SystemMessageError::Empty));
+
+        let mut first = Context::new();
+        assert_eq!(first.push_system_text("Answer in French.").err(), Some(SystemMessageError::First));
+
+        let mut after_assistant = Context::new();
+        after_assistant.push_user_text("hi");
+        after_assistant.push_assistant_text("hello");
+        assert_eq!(after_assistant.push_system_text("x").err(), Some(SystemMessageError::AfterAssistant));
+
+        // Two in a row is accepted, which the live API confirms.
+        let mut adjacent = Context::new();
+        adjacent.push_user_text("hi");
+        adjacent.push_system_text("first").unwrap();
+        adjacent.push_system_text("second").unwrap();
+        assert_eq!(adjacent.message_count(), 3);
+    }
+
+    /// The other half of the rules: what must *follow* a system message is a
+    /// property of the finished history, so appending a user turn after one turns
+    /// a legal conversation into an illegal request.
+    #[test]
+    fn a_system_message_followed_by_a_user_turn_is_caught_at_the_request() {
+        let mut ctx = Context::new();
+        ctx.push_user_text("name a fruit");
+        ctx.push_system_text("Answer in French.").unwrap();
+        assert_eq!(ctx.misplaced_system_message(), None, "ending the array is legal");
+
+        ctx.push_user_text("and a color");
+        assert_eq!(ctx.misplaced_system_message(), Some(1), "a user turn after it is not");
+        assert_eq!(
+            crate::request::Request::new(&ctx, Model::opus_5(), 1024).err(),
+            Some(crate::request::RequestError::SystemMessageNotFollowedByAssistant { at: 1 }),
+        );
+
+        // Preceding an assistant turn is legal, so the same history plus a reply is
+        // a request again.
+        ctx.push_assistant_text("Une pomme.");
+        assert_eq!(ctx.misplaced_system_message(), Some(1), "the user turn at index 2 is still in the way");
+    }
+
+    /// A cache breakpoint lands on a system message's inner block, which is where
+    /// the API accepts one: `cache_control on mid_conv_system is not supported;
+    /// set it on an inner content block instead`.
+    #[test]
+    fn a_breakpoint_lands_on_a_system_messages_inner_block() {
+        let mut ctx = Context::new();
+        ctx.push_user_text("hi");
+        ctx.push_system_text("Answer in French.").unwrap();
+        ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+        let v = req(&ctx);
+        assert_eq!(v["messages"][1]["content"][0]["cache_control"]["ttl"], "5m");
+        assert!(v["messages"][1].get("cache_control").is_none(), "never on the message itself");
     }
 
     #[test]
