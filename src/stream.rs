@@ -346,7 +346,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             start,
-            StreamEvent::ContentBlockStart { index: 0, block: StreamedBlock::Text { text: String::new() } }
+            StreamEvent::ContentBlockStart {
+                index: 0,
+                block: StreamedBlock::Text { text: String::new(), citations: Vec::new() }
+            }
         );
 
         let delta = StreamEvent::decode(

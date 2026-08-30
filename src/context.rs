@@ -42,6 +42,7 @@
 //! let _ = Message::System(vec![ContentBlock::text("no")]);
 //! ```
 
+use crate::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use crate::system::SystemBlock;
 use crate::{CacheControlType, CacheTtl, ImageMediaType, ImageOversize, Role, TextBlockType};
 use serde::Serialize;
@@ -180,15 +181,36 @@ pub enum ToolResultItem {
 
 /// A text block to send.
 ///
-/// The one block type both a message and a system message hold, which is why it
-/// is a struct shared by [`ContentBlock::Text`] and
-/// [`crate::system::SystemBlock::Text`] rather than duplicated per position.
-#[derive(Debug, Clone, Serialize)]
+/// The one block type every position holds, which is why it is one struct shared
+/// by [`ContentBlock::Text`], [`crate::system::SystemBlock::Text`], the top-level
+/// system prompt, and a search result's content, rather than four near-copies.
+///
+/// It serializes *with* its own `type`, because three of those four positions
+/// require one — a search result whose blocks omit it is a 400
+/// (`search_result.content.0.type: Field required`). The exception is
+/// [`ContentBlock`], whose enum writes the tag for the whole block, so its
+/// variant does not go through this impl.
+#[derive(Debug, Clone)]
 pub struct TextBlock {
     /// The text.
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
+}
+
+/// Wire shape: the tag, then the text, then the breakpoint where there is one.
+#[derive(Serialize)]
+struct TextBlockWire<'a> {
+    #[serde(rename = "type")]
+    kind: TextBlockType,
+    text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: &'a Option<CacheControl>,
+}
+
+impl Serialize for TextBlock {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        TextBlockWire { kind: TextBlockType::Text, text: &self.text, cache_control: &self.cache_control }.serialize(s)
+    }
 }
 
 impl TextBlock {
@@ -309,6 +331,11 @@ pub struct RedactedThinkingBlock {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// Text.
+    ///
+    /// Serialized through `ContentBlockTextWire` rather than [`TextBlock`]'s own
+    /// impl, because this enum already writes the `type` tag and two would be one
+    /// too many.
+    #[serde(serialize_with = "serialize_content_text")]
     Text(TextBlock),
     /// An image.
     Image(ImageBlock),
@@ -320,6 +347,22 @@ pub enum ContentBlock {
     Thinking(ThinkingBlock),
     /// A redacted thinking block being replayed.
     RedactedThinking(RedactedThinkingBlock),
+    /// Source material the model may read and, with citations enabled, quote.
+    Document(DocumentBlock),
+    /// Material a search returned, carrying where it came from.
+    SearchResult(SearchResultBlock),
+}
+
+/// A text block's fields without its tag, for the position whose enum writes one.
+#[derive(Serialize)]
+struct UntaggedTextBlock<'a> {
+    text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: &'a Option<CacheControl>,
+}
+
+fn serialize_content_text<S: serde::Serializer>(block: &TextBlock, s: S) -> Result<S::Ok, S::Error> {
+    UntaggedTextBlock { text: &block.text, cache_control: &block.cache_control }.serialize(s)
 }
 
 impl ContentBlock {
@@ -351,6 +394,18 @@ impl ContentBlock {
             cache_control: None,
         })
     }
+    /// Source material the model may read but not cite.
+    pub fn document(source: DocumentSource) -> Self {
+        Self::Document(DocumentBlock::new(source))
+    }
+    /// Source material the model may quote, emitting a citation where it does.
+    pub fn document_cited(source: DocumentSource) -> Self {
+        Self::Document(DocumentBlock::cited(source))
+    }
+    /// A search result the model may quote.
+    pub fn search_result(block: SearchResultBlock) -> Self {
+        Self::SearchResult(block)
+    }
     /// A failed tool result, which the model is told about via `is_error`.
     pub fn tool_result_err(tool_use_id: impl Into<String>, content: ToolResultContent) -> Self {
         Self::ToolResult(ToolResultBlock {
@@ -369,6 +424,8 @@ impl ContentBlock {
             Self::ToolResult(b) => &mut b.cache_control,
             Self::Thinking(b) => &mut b.cache_control,
             Self::RedactedThinking(b) => &mut b.cache_control,
+            Self::Document(b) => &mut b.cache_control,
+            Self::SearchResult(b) => &mut b.cache_control,
         }
     }
 }
@@ -573,21 +630,14 @@ pub(crate) struct SystemPrompt {
     pub(crate) cache_control: Option<CacheControl>,
 }
 
-#[derive(Serialize)]
-struct SystemTextBlockRef<'a> {
-    #[serde(rename = "type")]
-    kind: TextBlockType,
-    text: &'a str,
-    cache_control: &'a CacheControl,
-}
-
 impl Serialize for SystemPrompt {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         match &self.cache_control {
+            // The bare string, which is the shape a prompt with no breakpoint takes.
             None => self.text.serialize(s),
-            Some(cc) => {
-                [SystemTextBlockRef { kind: TextBlockType::Text, text: &self.text, cache_control: cc }].serialize(s)
-            }
+            // A one-element array of text blocks, which is the only shape that can
+            // carry a breakpoint. `TextBlock` already serializes as one.
+            Some(_) => [TextBlock { text: self.text.clone(), cache_control: self.cache_control }].serialize(s),
         }
     }
 }
