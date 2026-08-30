@@ -27,7 +27,8 @@
 
 use serde::Serialize;
 
-use crate::context::{CacheControl, TextBlock};
+use crate::block::TextBlock;
+use crate::context::CacheControl;
 use crate::frame::{FrameError, optional_string, require_str};
 use crate::values::{CitationType, DocumentMediaType, PlainTextMediaType};
 
