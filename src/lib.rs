@@ -11,6 +11,7 @@
 //!
 //! # Outbound
 //!
+//! * [`block`] — the content blocks a caller sends.
 //! * [`context`] — cache-safe, append-only conversation state.
 //! * [`document`] — source material the model may quote, and the citations it
 //!   quotes it with.
@@ -76,6 +77,7 @@
 
 #![deny(missing_docs)]
 
+pub mod block;
 pub mod content;
 pub mod context;
 pub mod document;

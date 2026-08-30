@@ -138,7 +138,7 @@ impl ToolInput {
 /// afterwards, so [`Self::ToolUse`] begins with an empty [`ToolInput`] rather
 /// than a decoded value.
 ///
-/// Distinct from [`crate::context::ContentBlock`], which is what a caller *sends*
+/// Distinct from [`crate::block::ContentBlock`], which is what a caller *sends*
 /// and carries cache-breakpoint metadata. This is what came back.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamedBlock {

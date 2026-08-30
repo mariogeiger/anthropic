@@ -11,7 +11,7 @@
 //! A `{"role": "system"}` entry inside `messages` solves both: it sits after the
 //! cached prefix, so nothing before it changes, and the model reads it as an
 //! instruction. That is why [`SystemBlock`] exists as its own block set rather
-//! than reusing [`crate::context::ContentBlock`] — the two positions admit
+//! than reusing [`crate::block::ContentBlock`] — the two positions admit
 //! different content, and a type that admitted the union would let the API's
 //! refusal be written.
 //!
@@ -19,7 +19,7 @@
 //!
 //! The top-level `system` field takes text and nothing else. A system *message*
 //! takes text, [`SystemBlock::ToolAddition`], and [`SystemBlock::ToolRemoval`].
-//! The shared part is [`crate::context::TextBlock`], which both hold; the
+//! The shared part is [`crate::block::TextBlock`], which both hold; the
 //! difference is what else they hold, which is why they are two types.
 //!
 //! # Placement
@@ -31,7 +31,8 @@
 
 use serde::Serialize;
 
-use crate::context::{CacheControl, TextBlock};
+use crate::block::TextBlock;
+use crate::context::CacheControl;
 use crate::values::{SystemBlockType, ToolReferenceType};
 
 /// One block of a mid-conversation system message.

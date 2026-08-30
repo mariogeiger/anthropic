@@ -13,8 +13,25 @@ Currently modeled: `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude
 - **A silent cache failure cannot hide.** A cached prefix below the model's minimum caches nothing and returns no error. `Usage::cache_hit_rate` is how you notice. Merging usage across frames is a pointwise maximum, so a later frame that reports fewer fields cannot zero the cache counts an earlier one gave you.
 - **A stop reason cannot be mistaken for the end of a stream.** `message_delta` carries `stop_reason` but is not terminal; only `message_stop` and `error` are. A stream cut off in between fails to settle and says the stop reason had already arrived.
 - **A parameter a model rejects does not exist on that model's type.** Sonnet 4.6 has no `xhigh` effort; Opus 5 with thinking off has no `xhigh` or `max`; Haiku 4.5 has no effort at all.
-- **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. `Message.role` is a `Role` of exactly `User` and `Assistant`; a month is one of twelve variants, not a `u8` documented as 1–12.
+- **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. A month is one of twelve variants, not a `u8` documented as 1–12; a temperature is a newtype, not an `f32` documented as 0–1.
+- **A role cannot carry content that role refuses.** `Message` is an enum whose variant *is* the role, so a system message holds only the text and tool changes the API accepts there — not an image, and not a tool result. There is no `role` field to set independently of the content.
 - **A checked constructor cannot be bypassed.** `Request` and `CountRequest` hold private fields behind readers, so `max_tokens` cannot be reassigned past the range check `Request::new` runs against the model's maximum.
+
+## What the crate covers
+
+Both request bodies (`/v1/messages` and `/v1/messages/count_tokens`), the
+non-streamed response, the SSE stream, and the error body. On the way out: a type
+per model, the four cache breakpoints, tools with their search and validation
+flags, `tool_choice`, stop sequences, `service_tier`, `metadata`, structured
+output, images, documents, search results, and mid-conversation system messages
+including tool additions and removals. On the way in: every documented event and
+delta kind, content blocks, citations, refusal details, and the full usage
+breakdown.
+
+Not covered, deliberately: no HTTP client, and no endpoint but Messages — Batches,
+Files, Models, and Skills are separate APIs. Server-side tools (web search, web
+fetch, code execution, computer and browser use, MCP toolsets) are not yet
+declarable; their blocks decode as `Unmodeled` rather than failing.
 
 ## Sending a request
 
