@@ -43,7 +43,7 @@
 //! ```
 
 use crate::system::SystemBlock;
-use crate::{CacheControlType, CacheTtl, ImageMediaType, Role, TextBlockType};
+use crate::{CacheControlType, CacheTtl, ImageMediaType, ImageOversize, Role, TextBlockType};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -200,12 +200,49 @@ impl TextBlock {
 }
 
 /// An image block to send.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct ImageBlock {
     /// Where the image's bytes come from.
     pub source: ImageSource,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// What the server does with an image larger than the model accepts.
+    ///
+    /// A real runtime distinction, not a defaulted scalar: absent means the
+    /// server's own behavior, which is to scale the image down *without saying
+    /// so*, and `Some(ImageOversize::Error)` is a caller asking to be told
+    /// instead. Naming a policy and inheriting one are different requests, so the
+    /// absent case stays absent.
+    ///
+    /// Measured: the NVIDIA inference gateway refuses the `transformations` object
+    /// this becomes, with `messages.0.content.0.image.transformations: Extra inputs
+    /// are not permitted`. It is in the documented stable schema, so it is here.
+    pub oversized: Option<ImageOversize>,
     pub(crate) cache_control: Option<CacheControl>,
+}
+
+/// Wire shape: `transformations` nests the policy the API names by condition.
+#[derive(Serialize)]
+struct ImageTransformations {
+    oversized_image: ImageOversize,
+}
+
+#[derive(Serialize)]
+struct ImageBlockWire<'a> {
+    source: &'a ImageSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transformations: Option<ImageTransformations>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: &'a Option<CacheControl>,
+}
+
+impl Serialize for ImageBlock {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        ImageBlockWire {
+            source: &self.source,
+            transformations: self.oversized.map(|oversized_image| ImageTransformations { oversized_image }),
+            cache_control: &self.cache_control,
+        }
+        .serialize(s)
+    }
 }
 
 /// A tool call to replay into the conversation.
@@ -290,9 +327,16 @@ impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
         Self::Text(TextBlock::new(text))
     }
-    /// An image block.
+    /// An image block, leaving the oversize policy to the server.
     pub fn image(source: ImageSource) -> Self {
-        Self::Image(ImageBlock { source, cache_control: None })
+        Self::Image(ImageBlock { source, oversized: None, cache_control: None })
+    }
+    /// An image block that states what to do if the image is too large.
+    ///
+    /// [`ImageOversize::Error`] is the reason to reach for this: the default
+    /// silently rescales, so the model observes dimensions the caller never chose.
+    pub fn image_sized(source: ImageSource, oversized: ImageOversize) -> Self {
+        Self::Image(ImageBlock { source, oversized: Some(oversized), cache_control: None })
     }
     /// A tool call being replayed.
     pub fn tool_use(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
@@ -449,6 +493,36 @@ pub struct Tool {
     /// Its JSON Schema. Key order matters for caching: a schema whose keys move
     /// between requests is a different prefix.
     pub input_schema: Value,
+    /// Whether to withhold this tool from the served schema until a tool search
+    /// returns a reference to it.
+    ///
+    /// A `bool` rather than an `Option`, because every tool is either deferred or
+    /// not, and it is emitted only when `true`: the field is rendered into the
+    /// prompt, so emitting `false` where the caller never asked for it writes a
+    /// different prefix and a different cache key — the same reasoning as
+    /// [`crate::tool_choice::ToolChoice`]'s parallel-use flag.
+    ///
+    /// The API refuses a request whose every tool is deferred (`At least one tool
+    /// must have defer_loading=false`). That is a relation across the tool list,
+    /// not a property of one tool, so [`Context::with_tools`] checks it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub defer_loading: bool,
+    /// Whether the API validates the model's tool names and inputs against the
+    /// schema. Emitted only when `true`, for the same prompt-identity reason.
+    ///
+    /// Measured: the NVIDIA inference gateway refuses this field with
+    /// `tools.0.custom.strict: Extra inputs are not permitted`. It is in the
+    /// documented stable schema, so it is here.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
+    /// Example inputs shown to the model beside the schema. Empty means none;
+    /// there is no "no examples" distinct from "an empty list of examples".
+    ///
+    /// Measured: the NVIDIA inference gateway refuses this field with
+    /// `tools.0.custom.input_examples: Extra inputs are not permitted`. It is in
+    /// the documented stable schema, so it is here.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub input_examples: Vec<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
 }
@@ -456,11 +530,38 @@ pub struct Tool {
 impl Tool {
     /// A tool with this name and schema, and no description yet.
     pub fn new(name: impl Into<String>, input_schema: Value) -> Self {
-        Self { name: name.into(), description: None, input_schema, cache_control: None }
+        Self {
+            name: name.into(),
+            description: None,
+            input_schema,
+            defer_loading: false,
+            strict: false,
+            input_examples: Vec::new(),
+            cache_control: None,
+        }
     }
     /// Describes what the tool does.
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());
+        self
+    }
+    /// Withholds this tool from the served schema until a tool search finds it.
+    ///
+    /// Worth it for a large tool set: the deferred tools cost no prompt tokens
+    /// until the model asks for them. At least one tool must stay undeferred, which
+    /// [`Context::with_tools`] checks.
+    pub fn deferred(mut self) -> Self {
+        self.defer_loading = true;
+        self
+    }
+    /// Has the API validate the model's tool names and inputs against the schema.
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
+    }
+    /// Shows the model example inputs beside the schema.
+    pub fn input_examples(mut self, examples: Vec<Value>) -> Self {
+        self.input_examples = examples;
         self
     }
 }
@@ -760,6 +861,15 @@ impl Context {
     /// How many of the four slots hold a breakpoint.
     pub fn breakpoint_count(&self) -> usize {
         self.slots.iter().filter(|s| s.is_some()).count()
+    }
+
+    /// The tools the model may call.
+    ///
+    /// Readable because a request-level invariant depends on the whole list —
+    /// see [`crate::request::RequestError::EveryToolDeferred`] — and because a
+    /// caller replaying a conversation wants to see what it offered.
+    pub fn tools(&self) -> &[Tool] {
+        &self.tools
     }
 
     /// How many entries the conversation holds.
@@ -1105,6 +1215,67 @@ mod tests {
         let v = req(&ctx);
         assert_eq!(v["messages"][0]["content"][0]["is_error"], false);
         assert_eq!(v["messages"][0]["content"][1]["is_error"], true);
+    }
+
+    /// The tool flags are rendered into the prompt, so each appears only when the
+    /// caller asked for it: emitting `false` writes a different prefix and a
+    /// different cache key.
+    #[test]
+    fn tool_flags_appear_only_when_set() {
+        let plain = Tool::new("one", serde_json::json!({"type": "object"}));
+        let v = req(&Context::new().with_tools(vec![plain]));
+        for field in ["defer_loading", "strict", "input_examples"] {
+            assert!(v["tools"][0].get(field).is_none(), "{field} should be absent when unset");
+        }
+
+        let configured = Tool::new("two", serde_json::json!({"type": "object"}))
+            .strict()
+            .input_examples(vec![serde_json::json!({"city": "Paris"})]);
+        let v = req(&Context::new().with_tools(vec![configured]));
+        assert_eq!(v["tools"][0]["strict"], true);
+        assert_eq!(v["tools"][0]["input_examples"][0]["city"], "Paris");
+    }
+
+    /// A deferred tool costs no prompt tokens until a tool search finds it, but the
+    /// API refuses a request in which every tool is deferred — a relation across
+    /// the list, so it is checked where the request is built.
+    #[test]
+    fn deferring_every_tool_is_refused_at_the_request() {
+        let deferred = || Tool::new("t", serde_json::json!({"type": "object"})).deferred();
+        let ctx = Context::new().with_tools(vec![deferred()]);
+        assert_eq!(
+            crate::request::Request::new(&ctx, Model::opus_4_8(), 16).err(),
+            Some(crate::request::RequestError::EveryToolDeferred { tools: 1 }),
+        );
+
+        // One undeferred tool is enough, and only the deferred one says so.
+        let ctx =
+            Context::new().with_tools(vec![Tool::new("eager", serde_json::json!({"type": "object"})), deferred()]);
+        let v = req(&ctx);
+        assert!(v["tools"][0].get("defer_loading").is_none());
+        assert_eq!(v["tools"][1]["defer_loading"], true);
+    }
+
+    /// The default silently rescales an oversized image, so asking to be told
+    /// instead is a different request — and absent stays absent.
+    #[test]
+    fn an_image_states_its_oversize_policy_only_when_asked() {
+        let mut ctx = Context::new();
+        ctx.push_user(vec![ContentBlock::image(ImageSource::base64(ImageMediaType::Png, "aGk="))]);
+        assert!(
+            req(&ctx)["messages"][0]["content"][0].get("transformations").is_none(),
+            "no policy named, no policy sent"
+        );
+
+        let mut ctx = Context::new();
+        ctx.push_user(vec![ContentBlock::image_sized(
+            ImageSource::base64(ImageMediaType::Png, "aGk="),
+            ImageOversize::Error,
+        )]);
+        let v = req(&ctx);
+        assert_eq!(v["messages"][0]["content"][0]["transformations"]["oversized_image"], "error");
+        assert_eq!(v["messages"][0]["content"][0]["type"], "image", "the tag survives the manual serializer");
+        assert_eq!(v["messages"][0]["content"][0]["source"]["media_type"], "image/png");
     }
 
     #[test]

@@ -19,6 +19,7 @@ use serde_json::Value;
 use crate::content::StreamedBlock;
 use crate::frame::{FrameError, decode_usage, require, require_str};
 use crate::settle::ToolCall;
+use crate::stream::RefusalDetails;
 use crate::usage::Usage;
 use crate::values::StopReason;
 
@@ -44,6 +45,8 @@ pub struct Response {
     pub stop_reason: Option<StopReason>,
     /// Which stop sequence matched, on [`StopReason::StopSequence`].
     pub stop_sequence: Option<String>,
+    /// Why the model refused, on [`StopReason::Refusal`]. `None` otherwise.
+    pub refusal: Option<RefusalDetails>,
     /// What the message cost, cache counts included.
     pub usage: Usage,
 }
@@ -71,6 +74,7 @@ impl Response {
             blocks,
             stop_reason: body.get("stop_reason").and_then(Value::as_str).and_then(StopReason::from_str),
             stop_sequence: body.get("stop_sequence").and_then(Value::as_str).map(str::to_owned),
+            refusal: RefusalDetails::decode(body.get("stop_details")),
             usage: decode_usage(body)?,
         })
     }
@@ -169,6 +173,42 @@ fn joined<'a>(pieces: impl Iterator<Item = &'a str> + Clone) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A response captured live whose usage names the tier that served it, and
+    /// whose `stop_details` is null because nothing was refused.
+    #[test]
+    fn a_captured_response_reports_its_tier_and_no_refusal() {
+        let response = Response::decode(
+            r#"{"model": "aws/anthropic/bedrock-claude-opus-5",
+                "id": "msg_bdrk_xks345u4fdiv5rwkn7a47smi4r3rntfka5cxui7s5vvm55twxwqa", "type": "message",
+                "role": "assistant", "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn", "stop_sequence": null, "stop_details": null,
+                "usage": {"input_tokens": 16, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+                "output_tokens": 4, "output_tokens_details": {"thinking_tokens": 0},
+                "service_tier": "standard"}}"#,
+        )
+        .unwrap();
+        assert_eq!(response.text(), "ok");
+        assert_eq!(response.refusal, None, "an ordinary stop refuses nothing");
+        assert_eq!(response.usage.service_tier, Some(crate::values::ServedTier::Standard));
+    }
+
+    /// A refusal is a finished message with a reason, not an error body.
+    #[test]
+    fn a_refusal_response_names_the_category_that_fired() {
+        let response = Response::from_json(&json!({
+            "id": "msg_r", "model": "claude-opus-5", "content": [], "stop_reason": "refusal",
+            "stop_details": {"type": "refusal", "category": "frontier_llm",
+                             "explanation": "This may assist competing model development."},
+            "usage": {"input_tokens": 90, "output_tokens": 0}
+        }))
+        .unwrap();
+        assert_eq!(response.stop_reason, Some(StopReason::Refusal));
+        let refusal = response.refusal.unwrap();
+        assert_eq!(refusal.category, Some(crate::values::RefusalCategory::FrontierLlm));
+        assert_eq!(refusal.explanation.as_deref(), Some("This may assist competing model development."));
+    }
 
     /// A response captured from the live gateway, on a cache hit.
     #[test]

@@ -37,7 +37,7 @@ use serde_json::Value;
 use crate::content::{BlockDelta, StreamedBlock};
 use crate::frame::{FrameError, decode_usage, optional_string, require, require_str, require_u32};
 use crate::usage::Usage;
-use crate::values::{ErrorType, StopReason};
+use crate::values::{ErrorType, RefusalCategory, StopReason};
 
 // ── Message-level payloads ───────────────────────────────────────────────────
 
@@ -62,6 +62,46 @@ pub struct MessageStart {
     pub usage: Usage,
 }
 
+/// Why the model refused, where it did.
+///
+/// A refusal is a *completed* message carrying [`StopReason::Refusal`], so this
+/// sits beside the stop reason rather than being an error: the protocol worked and
+/// the model declined. The category names the classifier that fired, not a
+/// judgement about the caller — Anthropic documents that benign work in each area
+/// can trigger it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefusalDetails {
+    /// Which policy area fired. `None` where the API named one this crate does not
+    /// know, which keeps a newly added category from costing the caller the frame.
+    pub category: Option<RefusalCategory>,
+    /// The `category` string exactly as sent, so an unknown one stays legible.
+    pub raw_category: String,
+    /// A human-readable explanation, where one was given. Anthropic documents this
+    /// text as not guaranteed stable, so log it rather than matching on it.
+    pub explanation: Option<String>,
+}
+
+impl RefusalDetails {
+    /// One `stop_details` object, decoded, or `None` where it was absent, null, or
+    /// of a kind other than `refusal`.
+    ///
+    /// Infallible in the same way [`StreamedError::decode`] is: a malformed
+    /// `stop_details` beside a real stop reason must not cost the caller the
+    /// message, so an unreadable one reads as absent.
+    pub(crate) fn decode(details: Option<&Value>) -> Option<Self> {
+        let details = details?.as_object()?;
+        if details.get("type").and_then(Value::as_str) != Some("refusal") {
+            return None;
+        }
+        let raw_category = details.get("category").and_then(Value::as_str).unwrap_or_default().to_owned();
+        Some(RefusalDetails {
+            category: RefusalCategory::from_str(&raw_category),
+            raw_category,
+            explanation: details.get("explanation").and_then(Value::as_str).map(str::to_owned),
+        })
+    }
+}
+
 /// The `message_delta` payload: how the message ended, and what it cost.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageDelta {
@@ -71,6 +111,8 @@ pub struct MessageDelta {
     pub stop_reason: Option<StopReason>,
     /// Which stop sequence matched, on [`StopReason::StopSequence`].
     pub stop_sequence: Option<String>,
+    /// Why the model refused, on [`StopReason::Refusal`]. `None` otherwise.
+    pub refusal: Option<RefusalDetails>,
     /// Cumulative usage, per Anthropic's documentation. Merged into what
     /// `message_start` reported — see [`Usage::merge_cumulative`].
     pub usage: Usage,
@@ -228,6 +270,7 @@ impl StreamEvent {
                 StreamEvent::MessageDelta(MessageDelta {
                     stop_reason: field("stop_reason").and_then(StopReason::from_str),
                     stop_sequence: field("stop_sequence").map(str::to_owned),
+                    refusal: RefusalDetails::decode(delta.and_then(|delta| delta.get("stop_details"))),
                     usage: decode_usage(frame)?,
                 })
             }
@@ -436,6 +479,51 @@ mod tests {
         let StreamEvent::MessageDelta(delta) = event else { panic!("expected message_delta") };
         assert_eq!(delta.stop_reason, Some(StopReason::StopSequence));
         assert_eq!(delta.stop_sequence.as_deref(), Some("END"));
+    }
+
+    /// A refusal is a completed message, so its reason arrives beside the stop
+    /// reason rather than as an error.
+    #[test]
+    fn a_refusal_carries_its_category_beside_the_stop_reason() {
+        let event = StreamEvent::from_json(&json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "refusal", "stop_sequence": null,
+                      "stop_details": {"type": "refusal", "category": "cyber",
+                                       "explanation": "This could enable exploit development."}}
+        }))
+        .unwrap();
+        let StreamEvent::MessageDelta(delta) = event else { panic!("expected message_delta") };
+        assert_eq!(delta.stop_reason, Some(StopReason::Refusal));
+        let refusal = delta.refusal.unwrap();
+        assert_eq!(refusal.category, Some(RefusalCategory::Cyber));
+        assert_eq!(refusal.raw_category, "cyber");
+        assert_eq!(refusal.explanation.as_deref(), Some("This could enable exploit development."));
+    }
+
+    /// A captured live frame's `stop_details` is `null` on an ordinary stop, and an
+    /// unreadable or unknown one must not cost the caller the frame.
+    #[test]
+    fn stop_details_that_name_no_refusal_read_as_absent() {
+        for details in [json!(null), json!("nonsense"), json!({}), json!({"type": "something_else"})] {
+            let event = StreamEvent::from_json(&json!({
+                "type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_details": details}
+            }))
+            .unwrap();
+            let StreamEvent::MessageDelta(delta) = event else { panic!("expected message_delta") };
+            assert_eq!(delta.refusal, None, "{details}");
+        }
+
+        // A category this crate does not know keeps its raw string.
+        let event = StreamEvent::from_json(&json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": "refusal", "stop_details": {"type": "refusal", "category": "some_new_area"}}
+        }))
+        .unwrap();
+        let StreamEvent::MessageDelta(delta) = event else { panic!("expected message_delta") };
+        let refusal = delta.refusal.unwrap();
+        assert_eq!(refusal.category, None);
+        assert_eq!(refusal.raw_category, "some_new_area");
+        assert_eq!(refusal.explanation, None);
     }
 
     /// Anthropic's documented mid-stream error, parsed into the crate's error

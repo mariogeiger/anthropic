@@ -31,7 +31,18 @@
 //!   `input_tokens` and `output_tokens`, and a last-writer-wins merge would
 //!   throw away exactly the two cache numbers this module exists to report.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+use crate::values::ServedTier;
+
+/// `service_tier` as the API sends it: a string this crate may not know.
+///
+/// An unrecognized tier reads as absent rather than failing the whole `usage`
+/// object, for the same reason an unrecognized stop reason does — the token
+/// counts beside it are perfectly good, and Anthropic may add a tier.
+fn deserialize_served_tier<'de, D: Deserializer<'de>>(d: D) -> Result<Option<ServedTier>, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.as_deref().and_then(ServedTier::from_str))
+}
 
 /// Cache writes split by time-to-live.
 ///
@@ -92,6 +103,18 @@ pub struct Usage {
     /// How much of [`Self::output_tokens`] went on thinking, where the API
     /// reports it.
     pub output_tokens_details: OutputTokensDetails,
+    /// How many server-side tool calls the request made, which are billed per
+    /// call rather than per token.
+    pub server_tool_use: ServerToolUsage,
+    /// Which tier actually served the request.
+    ///
+    /// `None` where the API did not say. Worth reading against what was asked
+    /// for: [`crate::values::ServiceTier::Auto`] requests priority capacity where
+    /// the account has it, and this is where a caller learns whether it got it.
+    /// The vocabulary differs from the request's on purpose — see
+    /// [`crate::values::ServedTier`].
+    #[serde(deserialize_with = "deserialize_served_tier")]
+    pub service_tier: Option<ServedTier>,
 }
 
 /// The breakdown of generated tokens.
@@ -100,6 +123,28 @@ pub struct Usage {
 pub struct OutputTokensDetails {
     /// Tokens spent thinking, already counted in [`Usage::output_tokens`].
     pub thinking_tokens: u64,
+}
+
+/// How many server-side tool calls a request made.
+///
+/// Billed per request rather than per token, which is why they are counted here
+/// instead of appearing in the token totals. Zero for a caller using only its own
+/// tools, which is the honest count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct ServerToolUsage {
+    /// How many times the server ran a web search.
+    pub web_search_requests: u64,
+    /// How many times the server fetched a URL.
+    pub web_fetch_requests: u64,
+}
+
+impl ServerToolUsage {
+    /// The pointwise maximum, as described in the module documentation.
+    pub fn merge_cumulative(&mut self, other: Self) {
+        self.web_search_requests = self.web_search_requests.max(other.web_search_requests);
+        self.web_fetch_requests = self.web_fetch_requests.max(other.web_fetch_requests);
+    }
 }
 
 impl Usage {
@@ -145,6 +190,11 @@ impl Usage {
         self.cache_creation.merge_cumulative(other.cache_creation);
         self.output_tokens_details.thinking_tokens =
             self.output_tokens_details.thinking_tokens.max(other.output_tokens_details.thinking_tokens);
+        self.server_tool_use.merge_cumulative(other.server_tool_use);
+        // Not a counter, so not a maximum: the tier a frame names is a fact about
+        // the request, and every frame that names one names the same one. A frame
+        // that omits it must not erase it, which is what keeping the first does.
+        self.service_tier = self.service_tier.or(other.service_tier);
     }
 }
 
@@ -244,6 +294,50 @@ mod tests {
             serde_json::from_value(json!({"cache_creation_input_tokens": 900, "output_tokens": 1})).unwrap();
         assert_eq!(usage.cache_creation_input_tokens, 900);
         assert!(!usage.cache_creation_is_consistent());
+    }
+
+    /// A response captured live, whose `usage` names the tier that served it — the
+    /// answer to "did my priority request get priority capacity".
+    #[test]
+    fn a_captured_usage_names_the_tier_that_served_it() {
+        let usage: Usage = serde_json::from_value(json!({
+            "input_tokens": 16, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+            "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
+            "output_tokens": 4, "output_tokens_details": {"thinking_tokens": 0}, "service_tier": "standard"
+        }))
+        .unwrap();
+        assert_eq!(usage.service_tier, Some(ServedTier::Standard));
+        assert_eq!(usage.server_tool_use, ServerToolUsage::default(), "no server tools were used");
+    }
+
+    /// A tier this crate does not know reads as absent rather than failing the
+    /// whole object: the token counts beside it are still real.
+    #[test]
+    fn an_unknown_tier_reads_as_absent() {
+        let usage: Usage =
+            serde_json::from_value(json!({"output_tokens": 7, "service_tier": "some_new_tier"})).unwrap();
+        assert_eq!(usage.service_tier, None);
+        assert_eq!(usage.output_tokens, 7);
+        let absent: Usage = serde_json::from_value(json!({"service_tier": null})).unwrap();
+        assert_eq!(absent.service_tier, None);
+    }
+
+    /// Server tool calls are billed per call, so they merge like the counters they
+    /// are; the tier is a fact rather than a counter, so a frame omitting it cannot
+    /// erase it.
+    #[test]
+    fn server_tool_counts_and_the_tier_both_survive_a_partial_later_frame() {
+        let mut usage: Usage = serde_json::from_value(json!({
+            "input_tokens": 40, "output_tokens": 2, "service_tier": "priority",
+            "server_tool_use": {"web_search_requests": 3, "web_fetch_requests": 1}
+        }))
+        .unwrap();
+        let later: Usage = serde_json::from_value(json!({"output_tokens": 90})).unwrap();
+        usage.merge_cumulative(&later);
+        assert_eq!(usage.output_tokens, 90, "the newer count wins");
+        assert_eq!(usage.service_tier, Some(ServedTier::Priority), "kept");
+        assert_eq!(usage.server_tool_use.web_search_requests, 3, "kept");
+        assert_eq!(usage.server_tool_use.web_fetch_requests, 1, "kept");
     }
 
     #[test]

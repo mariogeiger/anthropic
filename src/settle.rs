@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 
 use crate::content::{StreamedBlock, ToolInput};
 use crate::frame::FrameError;
-use crate::stream::{MessageDelta, MessageStart, StreamEvent, StreamedError};
+use crate::stream::{MessageDelta, MessageStart, RefusalDetails, StreamEvent, StreamedError};
 use crate::usage::Usage;
 use crate::values::StopReason;
 
@@ -278,9 +278,9 @@ impl Settling {
         let outcome = match terminal {
             Terminal::Error(error) => Outcome::Errored { error },
             Terminal::Stop => {
-                let (reason, stop_sequence) =
-                    self.ending.map(|end| (end.stop_reason, end.stop_sequence)).unwrap_or_default();
-                Outcome::Stopped { reason, stop_sequence }
+                let (reason, stop_sequence, refusal) =
+                    self.ending.map(|end| (end.stop_reason, end.stop_sequence, end.refusal)).unwrap_or_default();
+                Outcome::Stopped { reason, stop_sequence, refusal }
             }
         };
         Ok(Settled {
@@ -326,6 +326,10 @@ pub enum Outcome {
         reason: Option<StopReason>,
         /// Which stop sequence matched, on [`StopReason::StopSequence`].
         stop_sequence: Option<String>,
+        /// Why the model refused, on [`StopReason::Refusal`]. Here rather than in
+        /// its own outcome for the reason the whole variant exists: a refusal is a
+        /// message the server finished sending, so the protocol completed.
+        refusal: Option<RefusalDetails>,
     },
     /// The stream delivered an `error` event instead of finishing.
     Errored {
@@ -373,6 +377,15 @@ impl Settled {
     pub fn stop_reason(&self) -> Option<StopReason> {
         match &self.outcome {
             Outcome::Stopped { reason, .. } => *reason,
+            Outcome::Errored { .. } => None,
+        }
+    }
+
+    /// Why the model refused, on a stream that reached `message_stop` carrying
+    /// [`StopReason::Refusal`]. `None` otherwise.
+    pub fn refusal(&self) -> Option<&RefusalDetails> {
+        match &self.outcome {
+            Outcome::Stopped { refusal, .. } => refusal.as_ref(),
             Outcome::Errored { .. } => None,
         }
     }
@@ -468,7 +481,10 @@ mod tests {
         payloads.push(CAPTURED_MESSAGE_STOP);
         let settled = settle_all(&payloads).unwrap();
 
-        assert_eq!(settled.outcome, Outcome::Stopped { reason: Some(StopReason::EndTurn), stop_sequence: None });
+        assert_eq!(
+            settled.outcome,
+            Outcome::Stopped { reason: Some(StopReason::EndTurn), stop_sequence: None, refusal: None }
+        );
         assert_eq!(settled.text(), "GCD(1071, 462) = 21");
         assert_eq!(settled.thinking(), "", "no thinking was requested");
         assert_eq!(settled.id, "msg_bdrk_762xvdb");
@@ -812,7 +828,7 @@ mod tests {
     #[test]
     fn a_stop_without_a_reason_settles_with_none() {
         let settled = settle_all(&[r#"{"type": "message_stop"}"#]).unwrap();
-        assert_eq!(settled.outcome, Outcome::Stopped { reason: None, stop_sequence: None });
+        assert_eq!(settled.outcome, Outcome::Stopped { reason: None, stop_sequence: None, refusal: None });
         assert_eq!(settled.id, "", "no message_start arrived to name it");
         assert_eq!(settled.usage, Usage::default());
     }
@@ -845,7 +861,11 @@ mod tests {
         .unwrap();
         assert_eq!(
             settled.outcome,
-            Outcome::Stopped { reason: Some(StopReason::StopSequence), stop_sequence: Some("END".to_owned()) }
+            Outcome::Stopped {
+                reason: Some(StopReason::StopSequence),
+                stop_sequence: Some("END".to_owned()),
+                refusal: None
+            }
         );
     }
 
