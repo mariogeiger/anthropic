@@ -30,10 +30,10 @@
 //! partway through. Neither position can be spelled the other way, and the reason
 //! is the prompt cache: the top-level field sits near the start of the hashed
 //! prefix, so editing it re-processes the whole conversation, while a system
-//! message appends after the prefix and costs nothing. Measured: editing either
-//! the top-level field or a leading system message dropped
-//! `cache_read_input_tokens` to 0 after a 4,413-token write, whereas editing a
-//! system message at the end still read 4,407 from cache.
+//! message appends after the prefix and costs nothing. Measured over a
+//! 12,600-token cached prefix: editing a *trailing* system message still read the
+//! whole prefix from cache, while editing the top-level `system` field read 0 and
+//! rewrote all of it.
 //!
 //! *By model.* Mid-conversation system messages are documented as available on
 //! Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude Sonnet 5;
