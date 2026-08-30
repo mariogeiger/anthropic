@@ -20,7 +20,7 @@
 
 use crate::context::{Context, Message, SystemPrompt, Tool};
 use crate::tool_choice::ToolChoice;
-use crate::values::{ThinkingDisplay, ThinkingType};
+use crate::values::{OutputFormatType, ServiceTier, ThinkingDisplay, ThinkingType};
 use serde::Serialize;
 
 // The model types were part of this module before they outgrew it. Named
@@ -34,6 +34,96 @@ pub use crate::model::{
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
+
+/// An opaque identifier for the end user a request is made on behalf of.
+///
+/// Anthropic uses it to detect abuse, and documents that it must carry no
+/// identifying information — a UUID or a hash, never a name, email, or phone
+/// number. A newtype rather than a bare `String` so the constructor is the place
+/// that warning lives, and so `metadata` cannot be confused for anything else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EndUserId(String);
+
+impl EndUserId {
+    /// An opaque identifier, at most 512 characters.
+    ///
+    /// Pass a UUID or a hash. Anything identifying — a name, an email address, a
+    /// phone number — must not go here; the API accepts it and Anthropic asks that
+    /// you do not send it, which is a rule a type cannot enforce and documentation
+    /// must therefore state.
+    pub fn new(id: impl Into<String>) -> Result<Self, EndUserIdError> {
+        let id = id.into();
+        // The bound is on characters rather than bytes: the API documents
+        // `maxLength: 512`, which JSON Schema counts in code points.
+        let length = id.chars().count();
+        if length > Self::MAX_CHARS {
+            return Err(EndUserIdError::TooLong { length });
+        }
+        Ok(Self(id))
+    }
+
+    /// The documented maximum length, in characters.
+    pub const MAX_CHARS: usize = 512;
+
+    /// The identifier.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Why an end-user identifier was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndUserIdError {
+    /// Longer than the documented 512 characters, which the API rejects.
+    TooLong {
+        /// How many characters were given.
+        length: usize,
+    },
+}
+
+impl std::fmt::Display for EndUserIdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndUserIdError::TooLong { length } => {
+                write!(f, "end-user id is {length} characters, over the documented maximum of {}", EndUserId::MAX_CHARS)
+            }
+        }
+    }
+}
+
+impl std::error::Error for EndUserIdError {}
+
+/// A JSON schema the answer must satisfy.
+///
+/// The model's answer arrives as ordinary text in a text block; what this changes
+/// is that the text is guaranteed to parse against the schema. So it is a per-call
+/// parameter and not a content type: nothing about the conversation changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputFormat {
+    /// The schema the answer conforms to.
+    pub schema: serde_json::Value,
+}
+
+impl OutputFormat {
+    /// An answer conforming to this JSON schema.
+    pub fn json_schema(schema: serde_json::Value) -> Self {
+        Self { schema }
+    }
+}
+
+/// Wire shape: the enum in the `type` field, as every closed vocabulary is.
+#[derive(Serialize)]
+struct OutputFormatWire<'a> {
+    #[serde(rename = "type")]
+    kind: OutputFormatType,
+    schema: &'a serde_json::Value,
+}
+
+impl Serialize for OutputFormat {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        OutputFormatWire { kind: OutputFormatType::JsonSchema, schema: &self.schema }.serialize(s)
+    }
+}
 
 /// Construction-time rejection for a cross-field invariant the state/per-call
 /// split cannot express in the type system. Same "error before commit" approach
@@ -69,6 +159,16 @@ pub enum RequestError {
         /// Index in `messages` of the offending system message.
         at: usize,
     },
+    /// Every declared tool was deferred. The API answers `At least one tool must
+    /// have defer_loading=false`, because a model served an empty schema has
+    /// nothing to search with.
+    ///
+    /// Checked here rather than on [`crate::context::Tool`] because it is a
+    /// relation across the whole list, which no single tool's type can carry.
+    EveryToolDeferred {
+        /// How many tools were declared, all of them deferred.
+        tools: usize,
+    },
 }
 
 impl std::fmt::Display for RequestError {
@@ -82,6 +182,9 @@ impl std::fmt::Display for RequestError {
             }
             RequestError::SystemMessageNotFollowedByAssistant { at } => {
                 write!(f, "the system message at index {at} must end the conversation or precede an assistant turn")
+            }
+            RequestError::EveryToolDeferred { tools } => {
+                write!(f, "all {tools} declared tools are deferred; at least one must not be")
             }
         }
     }
@@ -105,6 +208,9 @@ pub struct Request<'a> {
     stop_sequences: Vec<String>,
     stream: bool,
     tool_choice: Option<ToolChoice>,
+    service_tier: ServiceTier,
+    end_user_id: Option<EndUserId>,
+    output_format: Option<OutputFormat>,
 }
 
 impl<'a> Request<'a> {
@@ -125,13 +231,27 @@ impl<'a> Request<'a> {
         if let Some(at) = context.misplaced_system_message() {
             return Err(RequestError::SystemMessageNotFollowedByAssistant { at });
         }
+        let tools = context.tools();
+        if !tools.is_empty() && tools.iter().all(|tool| tool.defer_loading) {
+            return Err(RequestError::EveryToolDeferred { tools: tools.len() });
+        }
         if let Model::Haiku4_5(h) = &model
             && let Haiku4_5Thinking::Enabled { budget_tokens } = h.thinking
             && budget_tokens >= max_tokens
         {
             return Err(RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens });
         }
-        Ok(Self { context, model, max_tokens, stop_sequences: Vec::new(), stream: false, tool_choice: None })
+        Ok(Self {
+            context,
+            model,
+            max_tokens,
+            stop_sequences: Vec::new(),
+            stream: false,
+            tool_choice: None,
+            service_tier: ServiceTier::Auto,
+            end_user_id: None,
+            output_format: None,
+        })
     }
 
     /// The conversation state this call is made against.
@@ -191,6 +311,51 @@ impl<'a> Request<'a> {
     /// the wire, which the API reads as `auto`.
     pub fn tool_choice(&self) -> Option<&ToolChoice> {
         self.tool_choice.as_ref()
+    }
+
+    /// Which capacity may serve the request.
+    ///
+    /// A plain field with the documented default, always emitted: the API accepts
+    /// it unconditionally and documents `auto`, so there is no runtime absence to
+    /// represent. Read [`crate::usage::Usage::service_tier`] to learn which tier
+    /// actually served it, which need not be the one asked for.
+    pub fn with_service_tier(mut self, tier: ServiceTier) -> Self {
+        self.service_tier = tier;
+        self
+    }
+
+    /// Which capacity may serve the request.
+    pub fn service_tier(&self) -> ServiceTier {
+        self.service_tier
+    }
+
+    /// Names the end user this request is made on behalf of, for abuse detection.
+    ///
+    /// A real runtime distinction rather than a defaulted value — a request is
+    /// either made on someone's behalf or it is not — so it is an `Option` and the
+    /// absent case sends no `metadata` at all.
+    pub fn with_end_user_id(mut self, id: EndUserId) -> Self {
+        self.end_user_id = Some(id);
+        self
+    }
+
+    /// The end user this request names, if any.
+    pub fn end_user_id(&self) -> Option<&EndUserId> {
+        self.end_user_id.as_ref()
+    }
+
+    /// Requires the answer to conform to a JSON schema.
+    ///
+    /// The answer still arrives as text in a text block; what changes is that the
+    /// text parses against the schema.
+    pub fn with_output_format(mut self, format: OutputFormat) -> Self {
+        self.output_format = Some(format);
+        self
+    }
+
+    /// The schema the answer must satisfy, if any.
+    pub fn output_format(&self) -> Option<&OutputFormat> {
+        self.output_format.as_ref()
     }
 }
 
@@ -260,11 +425,22 @@ enum ThinkingWire {
 }
 
 #[derive(Serialize)]
-struct OutputConfig {
+struct OutputConfig<'a> {
     // A `&'static str` rather than a per-model effort enum, because there is no
     // one such enum: each model accepts its own effort set, and this struct
     // is private, so no caller can write the field at all.
-    effort: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    format: Option<&'a OutputFormat>,
+}
+
+/// The `metadata` object, whose only documented field is the end-user id. A
+/// wrapper rather than a flattened field because the API nests it, and a request
+/// that names no end user sends no `metadata` at all.
+#[derive(Serialize)]
+struct Metadata<'a> {
+    user_id: &'a EndUserId,
 }
 
 #[derive(Serialize)]
@@ -288,7 +464,12 @@ struct RequestWire<'a> {
     tools: &'a Vec<Tool>,
     messages: &'a Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_config: Option<OutputConfig>,
+    output_config: Option<OutputConfig<'a>>,
+    // Always emitted with its documented default: a scalar the API accepts
+    // unconditionally is a complete record of what was asked for.
+    service_tier: ServiceTier,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<Metadata<'a>>,
     // Absent means `auto`, the documented default. Omitting rather than
     // defaulting keeps the message-cache key identical to a request that never
     // mentioned the field — see `ToolChoice`.
@@ -301,7 +482,7 @@ impl Serialize for Request<'_> {
         let adaptive = |display| ThinkingWire::Adaptive(AdaptiveThinking { kind: ThinkingType::Adaptive, display });
         let enabled =
             |budget_tokens| ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled, budget_tokens });
-        let effort = |e: &'static str| Some(OutputConfig { effort: e });
+        let effort = |e: &'static str| Some(e);
         let (temperature, thinking, output_config) = match &self.model {
             // Thinking is always on — always emit the adaptive block (the
             // request is a complete record of what the model sees).
@@ -354,6 +535,12 @@ impl Serialize for Request<'_> {
                 (Some(p.temperature.get()), th, None)
             }
         };
+        // `output_config` carries effort and format independently: Haiku 4.5 takes
+        // no effort but does take a format, so the object appears whenever either
+        // half is present and is omitted only when neither is.
+        let format = self.output_format.as_ref();
+        let output_config =
+            (output_config.is_some() || format.is_some()).then_some(OutputConfig { effort: output_config, format });
         RequestWire {
             model: self.model.api_id(),
             max_tokens: self.max_tokens,
@@ -361,6 +548,8 @@ impl Serialize for Request<'_> {
             temperature,
             thinking,
             output_config,
+            service_tier: self.service_tier,
+            metadata: self.end_user_id.as_ref().map(|user_id| Metadata { user_id }),
             stop_sequences: &self.stop_sequences,
             system: self.context.system.as_ref(),
             tools: &self.context.tools,
@@ -667,12 +856,83 @@ mod tests {
         assert!(Request::new(&ctx, Model::opus_4_8(), 16).is_ok());
     }
 
+    /// `service_tier` is a scalar the API accepts unconditionally and documents a
+    /// default for, so it is always emitted — the body is a complete record.
+    #[test]
+    fn the_service_tier_is_always_emitted_at_its_documented_default() {
+        assert_eq!(req(Model::opus_5())["service_tier"], "auto");
+        let ctx = Context::new();
+        let v = serde_json::to_value(
+            Request::new(&ctx, Model::opus_5(), 16).unwrap().with_service_tier(ServiceTier::StandardOnly),
+        )
+        .unwrap();
+        assert_eq!(v["service_tier"], "standard_only");
+        assert_eq!(
+            Request::new(&ctx, Model::opus_5(), 16).unwrap().service_tier(),
+            ServiceTier::Auto,
+            "the reader agrees with the wire"
+        );
+    }
+
+    /// An end user is really named or really not, so `metadata` is absent rather
+    /// than defaulted.
+    #[test]
+    fn an_end_user_id_appears_only_when_one_is_named() {
+        let ctx = Context::new();
+        assert!(req(Model::opus_5()).get("metadata").is_none(), "no end user, no metadata");
+        let id = EndUserId::new("3f2b8c1e-0000-4a5d-9e77-1c2b3a4d5e6f").unwrap();
+        let v = serde_json::to_value(Request::new(&ctx, Model::opus_5(), 16).unwrap().with_end_user_id(id)).unwrap();
+        assert_eq!(v["metadata"]["user_id"], "3f2b8c1e-0000-4a5d-9e77-1c2b3a4d5e6f");
+    }
+
+    /// The documented 512-character bound, counted in characters as JSON Schema
+    /// counts it rather than in bytes.
+    #[test]
+    fn an_end_user_id_refuses_more_than_the_documented_length() {
+        assert!(EndUserId::new("a".repeat(512)).is_ok());
+        assert_eq!(EndUserId::new("a".repeat(513)).err(), Some(EndUserIdError::TooLong { length: 513 }));
+        // 512 multi-byte characters are 512 characters, not 1,536 bytes' worth.
+        assert!(EndUserId::new("é".repeat(512)).is_ok());
+        assert_eq!(EndUserId::new("").unwrap().as_str(), "");
+    }
+
+    /// A schema rides in `output_config.format`, beside effort rather than instead
+    /// of it.
+    #[test]
+    fn an_output_format_joins_effort_in_the_output_config() {
+        let ctx = Context::new();
+        let schema = serde_json::json!({"type": "object", "properties": {"n": {"type": "integer"}}});
+        let v = serde_json::to_value(
+            Request::new(&ctx, Model::opus_5(), 16).unwrap().with_output_format(OutputFormat::json_schema(schema)),
+        )
+        .unwrap();
+        assert_eq!(v["output_config"]["effort"], "high", "effort survives");
+        assert_eq!(v["output_config"]["format"]["type"], "json_schema");
+        assert_eq!(v["output_config"]["format"]["schema"]["properties"]["n"]["type"], "integer");
+    }
+
+    /// Haiku 4.5 takes no effort but does take a format, so `output_config`
+    /// appears carrying only the half that applies.
+    #[test]
+    fn a_model_without_effort_still_carries_an_output_format() {
+        let ctx = Context::new();
+        assert!(req(Model::haiku_4_5()).get("output_config").is_none(), "neither half, no object");
+        let v = serde_json::to_value(
+            Request::new(&ctx, Model::haiku_4_5(), 16)
+                .unwrap()
+                .with_output_format(OutputFormat::json_schema(serde_json::json!({"type": "object"}))),
+        )
+        .unwrap();
+        assert!(v["output_config"].get("effort").is_none(), "effort is refused on this model");
+        assert_eq!(v["output_config"]["format"]["type"], "json_schema");
+    }
+
     #[test]
     fn count_request_omits_sampling_and_max_tokens() {
         let v = count(ModelId::Opus4_8);
         assert_eq!(v["model"], "claude-opus-4-8");
         assert!(v["messages"].is_array());
-        for f in ["max_tokens", "temperature", "thinking", "output_config", "stop_sequences"] {
+        for f in ["max_tokens", "temperature", "thinking", "output_config", "stop_sequences", "service_tier"] {
             assert!(v.get(f).is_none(), "{f} should be omitted");
         }
     }

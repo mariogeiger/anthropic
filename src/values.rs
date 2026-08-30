@@ -260,6 +260,82 @@ api_enum! {
 }
 
 api_enum! {
+    /// Which service tier a request may be served from.
+    ///
+    /// A capacity choice, not a content one: the model sees the same prompt
+    /// either way, and `usage.service_tier` reports which tier actually served
+    /// it — which need not be the one asked for.
+    ServiceTier {
+        /// Priority capacity where the account has it, standard otherwise. The
+        /// documented default.
+        Auto => "auto",
+        /// Standard capacity only, never priority.
+        StandardOnly => "standard_only",
+    }
+}
+
+api_enum! {
+    roundtrip
+    /// Which tier actually served a request, as `usage.service_tier` reports it.
+    ///
+    /// A different set from [`ServiceTier`], which is what a caller may *ask*
+    /// for: `batch` is never requested on this endpoint but is reported by one,
+    /// and `auto` is a request for priority-or-standard rather than a tier a
+    /// response can have been served from. Two vocabularies, so two enums.
+    ServedTier {
+        /// Standard capacity.
+        Standard => "standard",
+        /// Priority capacity.
+        Priority => "priority",
+        /// The Message Batches API.
+        Batch => "batch",
+    }
+}
+
+api_enum! {
+    /// What the server does with an image larger than the model accepts.
+    ImageOversize {
+        /// Scale it down to fit, changing the dimensions the model observes
+        /// without saying so. The documented default.
+        Downsize => "downsize",
+        /// Refuse the request with a 400 naming the image's dimensions and the
+        /// largest that would fit, so nothing is silently rescaled.
+        Error => "error",
+    }
+}
+
+api_enum! {
+    /// The `type` of an [`crate::request::OutputFormat`].
+    OutputFormatType {
+        /// The only form the API currently supports.
+        JsonSchema => "json_schema",
+    }
+}
+
+api_enum! {
+    roundtrip
+    /// Why the model refused, as `stop_details.category` names it.
+    ///
+    /// A refusal is a completed message with [`StopReason::Refusal`]; this is the
+    /// policy area that triggered it. Every category can be triggered by benign
+    /// work, so it identifies the classifier rather than accusing the caller.
+    RefusalCategory {
+        /// Could enable cyber harm. Benign security work can trigger it.
+        Cyber => "cyber",
+        /// Could enable biological harm. Benign life-sciences work can trigger it.
+        Bio => "bio",
+        /// Could assist development of competing models, which Anthropic's
+        /// commercial terms restrict. Benign machine-learning work can trigger it.
+        FrontierLlm => "frontier_llm",
+        /// Asked the model to reproduce its internal reasoning as answer text.
+        /// Adaptive thinking is the supported way to get reasoning.
+        ReasoningExtraction => "reasoning_extraction",
+        /// Some other area judged harmful.
+        GeneralHarms => "general_harms",
+    }
+}
+
+api_enum! {
     /// The `cache_control.type` of a breakpoint.
     CacheControlType {
         /// The only type the API currently supports.
