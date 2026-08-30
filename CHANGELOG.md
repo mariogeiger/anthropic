@@ -1,5 +1,182 @@
 # Changelog
 
+## 0.4.0
+
+The crate's mission is now written down — *represent the entire Anthropic Messages
+API faithfully in types* — and this release closes most of the gap between that
+claim and the code. Everything below was measured: probed against a live endpoint,
+or read from the published stable schema where a deployment refuses it.
+
+### Documents: `SOUL.md` and `AGENTS.md` replace `CLAUDE.md`
+
+`CLAUDE.md` held two jobs in one file. `SOUL.md` now states the mission and the
+stable design principles; `AGENTS.md` holds the working instructions — required
+checks, versioning and changelog rules, where things live, what is out of scope,
+and how to verify against the live API. Nothing was dropped. The numbered section
+references in the source named CLAUDE.md's headings, and each now names the
+principle it invokes instead.
+
+### Breaking: `Message` is an enum whose variant is the role
+
+The three roles do not admit the same content: a system message takes text and
+tool changes only, and the API answers `role 'system' supports text,
+tool_addition, and tool_removal blocks only` for anything else. A struct with a
+public `role` beside a public `content` let that rejection be written.
+
+- `context::Message` is now `Message::User(Vec<ContentBlock>)`,
+  `Message::Assistant(Vec<ContentBlock>)`, and
+  `Message::System(Vec<SystemBlock>)`. `Message::role()` derives the wire value,
+  and the serializer writes it from there, so it cannot disagree with the content.
+- Readers: `role()`, `content()` for the two `ContentBlock` roles, and
+  `system_content()` for the system role. `content()` returns `None` on a system
+  message, which is the whole point of the split.
+- `values::Role` gains `System`.
+- **Migration.** `Message { role: Role::User, content: blocks }` becomes
+  `Message::User(blocks)`. `msg.role` becomes `msg.role()`, and `msg.content`
+  becomes `msg.content()` — an `Option<&[ContentBlock]>`, so `msg.content()
+  .unwrap_or_default()` where a system message is impossible by construction. The
+  `push_user*`/`push_assistant*`/`push_tool_result` methods are unchanged.
+- Two `compile_fail` doctests prove both halves: neither a `role` field nor a
+  system message holding an ordinary `ContentBlock` compiles. Each was verified to
+  fail for its stated reason.
+
+### Breaking: content blocks move to `block`
+
+`context.rs` had reached 1,341 lines and two missions. The blocks a caller sends
+now live in `anthropic::block`, leaving `context` to the cache-safe conversation.
+
+- **Migration.** `anthropic::context::{ContentBlock, TextBlock, ImageBlock,
+  ImageSource, ToolUseBlock, ToolResultBlock, ToolResultContent, ToolResultItem,
+  ThinkingBlock, RedactedThinkingBlock}` become `anthropic::block::{…}`.
+  `Context`, `CacheSlot`, `CacheControl`, and `Tool` stay in `context`.
+
+### Mid-conversation system messages
+
+An instruction that arrives partway through a conversation had nowhere to go:
+rewriting the system prompt costs the whole cache, and a user turn makes the model
+read it as something the user said. The API's answer is a `{"role": "system"}`
+entry inside `messages`, which sits after the cached prefix.
+
+- New `anthropic::system` module: `SystemBlock` (text, tool addition, tool
+  removal) and `ToolReference` (`tool_reference`, `mcp_tool_reference`,
+  `mcp_toolset_reference`).
+- `Context::push_system` and `push_system_text` append one, returning
+  `SystemMessageError` for the placement rules decidable at append time: empty
+  content, first position, and following an assistant turn.
+- `Request::new` checks the remaining rule — a system message must end `messages`
+  or precede an assistant turn — because appending a user turn after a legal
+  system message makes it illegal, so only the finished history knows.
+  `RequestError::SystemMessageNotFollowedByAssistant` reports the chain's last
+  message, which is the position to change.
+- Measured: *two system messages in a row are accepted*, contrary to both the old
+  `CLAUDE.md` §7 note and the API's own wording. A live test holds that in place.
+- Cache breakpoints land on a system message's inner text block, which is where
+  the API accepts one: `cache_control on mid_conv_system is not supported; set it
+  on an inner content block instead`.
+
+### `tool_addition` and `tool_removal`, which our gateway refuses
+
+Implemented from the documented schema, where they are beta types carrying a tool
+reference. **The NVIDIA inference gateway rejects them with a 400** — `Input tag
+'tool_removal' … does not match any of the expected tags` — with and without the
+beta header. The crate's mission is the API rather than one deployment, so they are
+expressed and the refusal is stated here and in their documentation. No test
+requires the gateway to accept them.
+
+Their value, where they work: a tool withdrawn this way leaves `tools`
+byte-identical, so the tools cache stays warm — the same asymmetry that makes
+`ToolChoice::None` cheaper than sending no tools.
+
+### Documents, search results, and citations
+
+- New `anthropic::document` module. `DocumentBlock` is material the caller
+  supplies (PDF, plain text, URL, Files API id); `SearchResultBlock` is material a
+  search returned, whose source and title are required because a result whose
+  origin is unknown cannot be cited usefully. The API counts them separately, as
+  `document_index` versus `search_result_index`.
+- `Citation` decodes all five documented kinds, and an unmodeled kind is a variant
+  meaning ignore me.
+- `content::BlockDelta::Citations` replaces `citations_delta`'s former
+  `Unmodeled` reading. `StreamedBlock::Text` gains a `citations` field.
+  `Settled::citations()` and `Response::citations()` flatten them for a caller
+  rendering footnotes.
+- Citations are opt-in: a request that never mentioned them is byte-identical to
+  one built before this release, so its cache prefix still matches.
+- `TextBlock` now serializes with its own `type`, because three of the four
+  positions holding one require it — measured: a search result whose blocks omit
+  it is `search_result.content.0.type: Field required`. `ContentBlock::Text` is
+  the exception, since its enum writes the tag.
+- `tests/captured/citations.sse` is a real cited stream: four text blocks, two
+  grounded by character range. Note the frame order it records — a block's
+  `citations_delta` arrives *before* the `text_delta`s it grounds.
+
+### Per-call parameters
+
+- `service_tier`, as `values::ServiceTier` (`auto`, `standard_only`). A scalar the
+  API accepts unconditionally with a documented default, so it is a plain
+  always-emitted field.
+- `metadata.user_id`, as `request::EndUserId` — a newtype enforcing the documented
+  512-character bound, counted in characters as JSON Schema counts it, and
+  carrying Anthropic's warning that nothing identifying belongs there.
+- `output_config.format`, as `request::OutputFormat::json_schema`. `output_config`
+  now appears whenever *either* effort or format is present: Haiku 4.5 takes no
+  effort but does take a format.
+- `top_p` and `top_k` remain absent, and now for a measured reason: every modeled
+  model answers `` `top_p` is deprecated for this model ``.
+
+### Tool declarations
+
+`Tool` gains `defer_loading`, `strict`, and `input_examples`, each emitted only
+when set — the field is rendered into the prompt, so emitting a default the caller
+never asked for writes a different cache key.
+
+`Request::new` refuses a request whose every tool is deferred, which the API
+states as `At least one tool must have defer_loading=false`; that is a relation
+across the list, so no single tool's type can carry it. `Context::tools()` is now
+readable, which is what the check needs.
+
+Measured: `defer_loading` is accepted; **`strict` and `input_examples` are refused
+by our gateway** (`tools.0.custom.strict: Extra inputs are not permitted`). Both
+are in the documented stable schema, so both stay.
+
+### Images
+
+`ImageBlock` gains the oversize policy, as `values::ImageOversize`. The API's
+default silently rescales an image larger than the model accepts, so the model
+observes dimensions the caller never chose; `ImageOversize::Error` asks to be told
+instead. Absent stays absent, because naming a policy and inheriting one are
+different requests. **Measured: our gateway refuses the `transformations` object**
+this becomes; it is in the documented stable schema, so it stays.
+
+### Response side
+
+- `usage.service_tier`, as `values::ServedTier` (`standard`, `priority`, `batch`).
+  A deliberately different vocabulary from the request's: `batch` is reported but
+  never asked for, `auto` asked for but never reported. It merges by keeping the
+  first frame that named one rather than by maximum — it is a fact about the
+  request, not a counter.
+- `usage.server_tool_use`, as `usage::ServerToolUsage`: web search and web fetch
+  request counts, billed per call rather than per token.
+- `stop_details`, as `stream::RefusalDetails` with `values::RefusalCategory`
+  (`cyber`, `bio`, `frontier_llm`, `reasoning_extraction`, `general_harms`). It
+  sits beside the stop reason on `Response`, `MessageDelta`, and
+  `Outcome::Stopped`, because a refusal is a message the server finished sending.
+- **Migration.** `Outcome::Stopped` gains a `refusal` field; a struct pattern over
+  it needs `..` or the new field. `Settled::refusal()` reads it.
+
+### Still missing, in priority order
+
+Server-side tool *declarations*: web search, web fetch, code execution, bash, text
+editor, memory, tool search, and the computer and browser toolsets, plus MCP
+toolsets and the `container`/skills parameters they need. Their result blocks
+already decode as `Unmodeled` rather than failing, and a caller that does not
+declare them never sees one. Also absent: `connector_text` and `container_upload`
+blocks, `ToolResultBlockParam`'s `toolset_name` and its document, search-result and
+tool-reference content forms, `allowed_callers`, `eager_input_streaming`,
+`inference_geo`, `user_profile_id`, top-level `cache_control`, `display` on the
+legacy fixed-budget thinking form, and `thinking`/`tool_choice`/`output_config` on
+`count_tokens`.
+
 ## 0.3.0
 
 Wire vocabulary is typed everywhere, not just in the places a caller was expected
