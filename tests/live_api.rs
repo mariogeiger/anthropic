@@ -21,6 +21,14 @@
 //! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
 //! customers, so they exercise 200/400 on any org with a `.key`.
 //!
+//! The API-coverage cases (added 2026-08-30) were exercised against the same
+//! translating gateway: a mid-conversation system message after a user turn,
+//! *two* of them in a row, cited documents and cited search results both
+//! answering with a `char_location` citation, `service_tier` +
+//! `metadata.user_id` + `output_config.format` together, and a deferred tool
+//! beside an eager one. The adjacency case corrected a real error: the crate had
+//! refused two system messages in a row, which the API accepts.
+//!
 //! The Opus 5 cases (added 2026-08-28) were exercised against a translating
 //! gateway rather than the first-party API: adaptive thinking on by default,
 //! `{type:"disabled"}` accepted as the off state, `output_config.effort` graded
@@ -34,12 +42,15 @@
 //! first-party API in both directions, so these remain to be confirmed on an
 //! org with a `.key`.
 
-use anthropic::context::{CacheSlot, Context};
+use anthropic::block::{ContentBlock, TextBlock};
+use anthropic::context::{CacheSlot, Context, Tool};
+use anthropic::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use anthropic::request::{
-    CountRequest, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Opus5ThinkingOffEffort, Request,
-    Sonnet4_6Effort, Sonnet5Effort, Temperature,
+    CountRequest, EndUserId, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Opus5ThinkingOffEffort,
+    OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
-use anthropic::{CacheTtl, MESSAGES_PATH, ThinkingDisplay};
+use anthropic::response::Response;
+use anthropic::{CacheTtl, MESSAGES_PATH, ServiceTier, ThinkingDisplay};
 use serde_json::{Value, json};
 
 // ── Harness ──────────────────────────────────────────────────────────────────
@@ -432,6 +443,105 @@ fn live_ok_sonnet_5_roll_cache_across_turns() {
     assert_ok(code2, &body2);
     let read = body2["usage"]["cache_read_input_tokens"].as_u64().unwrap_or(0);
     assert!(read > 0, "rolled prefix should be re-read on the 2nd turn, usage: {}", body2["usage"]);
+}
+
+/// A mid-conversation system message: the instruction lands after the cached
+/// prefix, so the system prompt above it is untouched and the model still obeys.
+#[test]
+fn live_ok_a_system_message_is_accepted_after_a_user_turn() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new().with_system("You are helpful.");
+    ctx.push_user_text("Name a fruit in one word.");
+    ctx.push_system_text("Reply only in French.").expect("a system message after a user turn is legal");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 24).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+/// Two system messages in a row are accepted, which is why `push_system` permits it
+/// and why `misplaced_system_message` treats a system message as a legal successor.
+/// Measured rather than read off the API's wording, which says only that a system
+/// message must precede an assistant turn or end the array.
+#[test]
+fn live_ok_adjacent_system_messages_are_accepted() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new();
+    ctx.push_user_text("Name a fruit in one word.");
+    ctx.push_system_text("Reply only in French.").unwrap();
+    ctx.push_system_text("Use no punctuation.").unwrap();
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 24).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+/// A cited document: the model answers from the source and names where it looked.
+#[test]
+fn live_ok_a_cited_document_produces_a_citation() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new();
+    ctx.push_user(vec![
+        ContentBlock::Document(
+            DocumentBlock::cited(DocumentSource::text("The sky is blue during the day. At night it is black."))
+                .with_title("Field guide"),
+        ),
+        ContentBlock::text("What color is the sky at night? Cite the guide."),
+    ]);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 120).unwrap(), &key);
+    assert_ok(code, &body);
+    let response = Response::from_json(&body).expect("decode the answer");
+    let citations: Vec<_> = response.citations().collect();
+    assert!(!citations.is_empty(), "citations were enabled, so the grounded answer must carry one: {body}");
+    assert!(citations.iter().all(|c| c.cited_text().is_some_and(|text| !text.is_empty())));
+}
+
+/// A cited search result, whose citation the API counts separately from documents.
+#[test]
+fn live_ok_a_cited_search_result_produces_a_citation() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new();
+    ctx.push_user(vec![
+        ContentBlock::search_result(SearchResultBlock::cited(
+            "https://example.com/guide",
+            "Field guide",
+            vec![TextBlock::new("Mercury is the closest planet to the Sun.")],
+        )),
+        ContentBlock::text("Which planet is closest to the Sun? Cite the result."),
+    ]);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 120).unwrap(), &key);
+    assert_ok(code, &body);
+}
+
+/// The per-call parameters added for API coverage, sent together: the tier a
+/// request may use, the end user it is made for, and a schema its answer obeys.
+#[test]
+fn live_ok_service_tier_metadata_and_output_format_are_accepted() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new();
+    ctx.push_user_text("Give me the number seven as JSON matching the schema.");
+    let schema = json!({"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]});
+    let request = Request::new(&ctx, Model::opus_5(), 60)
+        .unwrap()
+        .with_service_tier(ServiceTier::StandardOnly)
+        .with_end_user_id(EndUserId::new("3f2b8c1e-0000-4a5d-9e77-1c2b3a4d5e6f").unwrap())
+        .with_output_format(OutputFormat::json_schema(schema));
+    let (code, body) = post(MESSAGES_PATH, &request, &key);
+    assert_ok(code, &body);
+    // The tier that served it is reported, and need not be the one asked for.
+    let response = Response::from_json(&body).expect("decode the answer");
+    assert!(response.usage.service_tier.is_some(), "usage should name the tier that served it: {body}");
+}
+
+/// A deferred tool costs no prompt tokens until a tool search finds it, and at
+/// least one tool must stay undeferred — which the crate refuses before the API can.
+#[test]
+fn live_ok_a_deferred_tool_is_accepted_beside_an_eager_one() {
+    let key = key_or_skip!();
+    let tools = vec![
+        Tool::new("get_weather", json!({"type": "object"})).description("weather now"),
+        Tool::new("get_forecast", json!({"type": "object"})).description("weather later").deferred(),
+    ];
+    let mut ctx = Context::new().with_tools(tools);
+    ctx.push_user_text("Reply with the single word: ok");
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, Model::opus_5(), 16).unwrap(), &key);
+    assert_ok(code, &body);
 }
 
 // ── Negative: combos the crate forbids really do 400 ──────────────────────────

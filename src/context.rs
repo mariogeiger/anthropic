@@ -604,16 +604,25 @@ impl Context {
         self.messages.len()
     }
 
-    /// Where a system message sits that neither ends the conversation nor
-    /// precedes an assistant turn, if any.
+    /// Where a system message sits whose successor the API refuses, if any.
     ///
-    /// The half of the placement rules an append cannot decide, because appending
-    /// a user turn after a legal system message makes it illegal. Read by
+    /// The half of the placement rules an append cannot decide, because appending a
+    /// user turn after a legal system message makes it illegal. Read by
     /// [`crate::request::Request::new`], where the history is final.
+    ///
+    /// Another system message is a legal successor, which is *measured* rather than
+    /// read off the API's wording: the server says a system message "must precede
+    /// an 'assistant' message or end the array", and yet accepts two in a row. What
+    /// it enforces is that the *chain* of system messages ends the array or precedes
+    /// an assistant turn, so that is what this checks. A live test holds the
+    /// measurement in place.
+    ///
+    /// A chain is therefore reported at its *last* message, which is the one whose
+    /// successor is wrong. That is the position a caller has to change.
     pub(crate) fn misplaced_system_message(&self) -> Option<usize> {
         self.messages.iter().enumerate().find_map(|(at, message)| {
             let misplaced = matches!(message, Message::System(_))
-                && !matches!(self.messages.get(at + 1), None | Some(Message::Assistant(_)));
+                && !matches!(self.messages.get(at + 1), None | Some(Message::Assistant(_) | Message::System(_)));
             misplaced.then_some(at)
         })
     }
@@ -878,12 +887,20 @@ mod tests {
         after_assistant.push_assistant_text("hello");
         assert_eq!(after_assistant.push_system_text("x").err(), Some(SystemMessageError::AfterAssistant));
 
-        // Two in a row is accepted, which the live API confirms.
+        // Two in a row is accepted, which the live API confirms — so a chain of
+        // them is well-placed as long as the chain itself is.
         let mut adjacent = Context::new();
         adjacent.push_user_text("hi");
         adjacent.push_system_text("first").unwrap();
         adjacent.push_system_text("second").unwrap();
         assert_eq!(adjacent.message_count(), 3);
+        assert_eq!(adjacent.misplaced_system_message(), None, "the chain ends the array");
+        adjacent.push_user_text("and now a question");
+        assert_eq!(
+            adjacent.misplaced_system_message(),
+            Some(2),
+            "the chain's last message is the one whose successor is wrong"
+        );
     }
 
     /// The other half of the rules: what must *follow* a system message is a

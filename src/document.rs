@@ -133,13 +133,13 @@ impl DocumentBlock {
     }
 
     /// Titles the document. Citations into it repeat this title.
-    pub fn title(mut self, title: impl Into<String>) -> Self {
+    pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
     /// Describes the document to the model without making the description citable.
-    pub fn context(mut self, context: impl Into<String>) -> Self {
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
         self
     }
@@ -373,8 +373,8 @@ mod tests {
 
         let cited = serde_json::to_value(
             DocumentBlock::cited(DocumentSource::text("The sky is blue."))
-                .title("Colors")
-                .context("An excerpt from a field guide."),
+                .with_title("Colors")
+                .with_context("An excerpt from a field guide."),
         )
         .unwrap();
         assert_eq!(cited["citations"], json!({"enabled": true}));
