@@ -359,7 +359,7 @@ impl ContentBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Context;
+    use crate::context::{Context, Opening};
     use crate::request::{Model, Request};
 
     /// Blocks are only observable through a request, so that is how they are read
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn image_media_type_serializes_from_the_enum() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user(vec![ContentBlock::image(ImageSource::base64(ImageMediaType::Png, "aGk="))]);
         let v = request_of(&ctx);
         assert_eq!(v["messages"][0]["content"][0]["source"]["media_type"], "image/png");
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn tool_result_is_error_emitted_as_bool() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user(vec![
             ContentBlock::tool_result("tu_1", ToolResultContent::Text("ok".into())),
             ContentBlock::tool_result_err("tu_2", ToolResultContent::Text("oops".into())),
@@ -393,14 +393,14 @@ mod tests {
     /// instead is a different request — and absent stays absent.
     #[test]
     fn an_image_states_its_oversize_policy_only_when_asked() {
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user(vec![ContentBlock::image(ImageSource::base64(ImageMediaType::Png, "aGk="))]);
         assert!(
             request_of(&ctx)["messages"][0]["content"][0].get("transformations").is_none(),
             "no policy named, no policy sent"
         );
 
-        let mut ctx = Context::new();
+        let mut ctx = Context::new(Opening::None);
         ctx.push_user(vec![ContentBlock::image_sized(
             ImageSource::base64(ImageMediaType::Png, "aGk="),
             ImageOversize::Error,
