@@ -1,6 +1,6 @@
 //! Enums mirroring API JSON values. `as_str()` is outbound; `from_str()` / the
 //! HTTP-status table are pure `match`-on-primitive lookup tables — wire
-//! vocabulary under §6, not a response parser.
+//! vocabulary, not a response parser.
 //!
 //! Every one of these enums serializes to its own wire string, so a wire struct
 //! anywhere in the crate holds the enum rather than the string: a `&'static str`
@@ -11,7 +11,7 @@
 /// The generated `as_str` is the outbound direction: one arm per variant, no
 /// allocation, no formatting. The optional `roundtrip` prefix adds `from_str`,
 /// the documented inverse — a pure `match` on `&str` and therefore wire
-/// vocabulary rather than a response parser (§6).
+/// vocabulary rather than a response parser.
 ///
 /// Every one of these enums *is* a wire string, so every one serializes as that
 /// string, through the same `as_str` the outbound direction already uses. That is
@@ -198,7 +198,7 @@ api_enum! {
 
 impl ErrorType {
     /// Documented HTTP-status-code → `ErrorType` mapping. Pure lookup table,
-    /// in-scope under §6; not a response parser.
+    /// in scope as wire vocabulary; not a response parser.
     pub fn from_status(status: u16) -> Option<Self> {
         Some(match status {
             400 => Self::InvalidRequest,
@@ -253,7 +253,7 @@ api_enum! {
 mod tests {
     use super::*;
 
-    /// `from_str` is the documented inverse of `as_str` (§6): every wire string
+    /// `from_str` is the documented inverse of `as_str`: every wire string
     /// must round-trip, and unknown strings must return `None`.
     #[test]
     fn stop_reason_roundtrips() {

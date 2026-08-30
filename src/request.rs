@@ -35,9 +35,9 @@ pub use crate::model::{
 
 // ── Request ──────────────────────────────────────────────────────────────────
 
-/// Construction-time rejection for a cross-field invariant the §4 state/per-call
-/// split can't express in the type system. Same "error before commit" approach
-/// as the cache ops (§1): refuse rather than let the API answer with a 400.
+/// Construction-time rejection for a cross-field invariant the state/per-call
+/// split cannot express in the type system. Same "error before commit" approach
+/// as the cache ops: refuse rather than let the API answer with a 400.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RequestError {
     /// Legacy fixed-budget thinking requires `budget_tokens < max_tokens`; the
@@ -177,7 +177,8 @@ impl<'a> Request<'a> {
 
 /// Request body for `POST /v1/messages/count_tokens`. Takes only a [`ModelId`]:
 /// the endpoint ignores sampling/thinking/effort, so exposing them here would
-/// let callers set values the wire payload silently drops (violates §5).
+/// let callers set values the wire payload silently drops, which explicit
+/// serialization forbids.
 ///
 /// Private fields with readers, matching [`Request`]: this endpoint's body is
 /// fixed at construction and there is nothing to reassign afterwards, so a
@@ -205,7 +206,7 @@ impl<'a> CountRequest<'a> {
 }
 
 // ── Serialization ────────────────────────────────────────────────────────────
-// Private wire structs: Option = real runtime absence (§3), empty vecs skipped —
+// Private wire structs: Option = real runtime absence, empty vecs skipped —
 // never "omit if equal to default".
 
 #[derive(Serialize)]
@@ -240,7 +241,7 @@ enum ThinkingWire {
 #[derive(Serialize)]
 struct OutputConfig {
     // A `&'static str` rather than a per-model effort enum, because there is no
-    // one such enum: each model accepts its own effort set (§2), and this struct
+    // one such enum: each model accepts its own effort set, and this struct
     // is private, so no caller can write the field at all.
     effort: &'static str,
 }
@@ -251,7 +252,7 @@ struct RequestWire<'a> {
     max_tokens: u32,
     // Emitted only when streaming was asked for: the API reads an absent field
     // as `false`, and this is a transport choice the model never sees, so it is
-    // outside §5's "the body is a complete record of what the model sees".
+    // outside the rule that the body is a complete record of what the model sees.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -281,11 +282,11 @@ impl Serialize for Request<'_> {
             |budget_tokens| ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled, budget_tokens });
         let effort = |e: &'static str| Some(OutputConfig { effort: e });
         let (temperature, thinking, output_config) = match &self.model {
-            // Thinking is always on — always emit the adaptive block (§5: the
+            // Thinking is always on — always emit the adaptive block (the
             // request is a complete record of what the model sees).
             Model::Fable5(p) => (None, Some(adaptive(Some(p.display))), effort(p.effort.as_str())),
             // Adaptive thinking is always emitted explicitly; "off" is the explicit
-            // disabled block, not an omitted field (§5). No sampling: `temperature`
+            // disabled block, not an omitted field. No sampling: `temperature`
             // is rejected as deprecated on this model.
             Model::Opus5(p) => match &p.thinking {
                 Opus5Thinking::Adaptive { display, effort: e } => {
@@ -306,7 +307,7 @@ impl Serialize for Request<'_> {
                 effort(p.effort.as_str()),
             ),
             // Adaptive thinking is always emitted explicitly; "off" is the explicit
-            // disabled block, not an omitted field (§5). No sampling.
+            // disabled block, not an omitted field. No sampling.
             Model::Sonnet5(p) => (
                 None,
                 Some(match &p.thinking {
@@ -455,7 +456,7 @@ mod tests {
         assert_eq!(v["model"], "claude-sonnet-5");
         assert!(v.get("temperature").is_none(), "temperature must not be sent on Sonnet 5");
         // Adaptive thinking is on by default and emitted explicitly (omitting the
-        // field would also mean on, but §5 keeps the body a complete record).
+        // field would also mean on, but the body stays a complete record).
         assert_eq!(v["thinking"]["type"], "adaptive");
         assert_eq!(v["thinking"]["display"], "omitted");
         assert_eq!(v["output_config"]["effort"], "high");
