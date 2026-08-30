@@ -2,8 +2,14 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # `tests/captured/` holds verbatim bodies from a live endpoint. A trailing
+      # blank line terminates an SSE frame and a response body ends however the
+      # server ended it, so editing those bytes makes a captured frame no longer
+      # captured — which is the whole reason it is in the repository.
       - id: trailing-whitespace
+        exclude: ^tests/captured/
       - id: end-of-file-fixer
+        exclude: ^tests/captured/
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
