@@ -472,6 +472,48 @@ fn live_ok_adjacent_system_messages_are_accepted() {
     assert_ok(code, &body);
 }
 
+/// Records the asymmetry, and is deliberately *not* an assertion about legality.
+///
+/// Our translating gateway accepts a leading `{"role": "system"}` message, which
+/// the documented API answers with a 400. Measured 2026-08-30: 200 on both
+/// `/v1/messages` and `count_tokens`. The *successor* rule is enforced there — a
+/// system message followed by a user turn answered 400 with `role 'system' must
+/// precede an 'assistant' message or end the array` — so the permissiveness is
+/// specific to the first position rather than general, and `count_tokens`
+/// validates nothing at all.
+///
+/// The crate refuses both on the documentation's authority — see `AGENTS.md`,
+/// "Verifying against the live API". This test therefore only *reports* what the
+/// endpoint said, so an endpoint that changes its mind in either direction is
+/// visible without turning a green run red. Neither shape is buildable through the
+/// crate, so both bodies are raw JSON.
+#[test]
+fn live_report_the_gateway_is_more_permissive_than_the_documented_placement_rules() {
+    let key = key_or_skip!();
+    for (label, messages) in [
+        (
+            "a leading system message",
+            json!([{"role": "system", "content": "Be terse."}, {"role": "user", "content": "Say OK."}]),
+        ),
+        (
+            "a system message followed by a user turn",
+            json!([
+                {"role": "user", "content": "Say OK."},
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "Say OK again."}
+            ]),
+        ),
+    ] {
+        let body = json!({"model": ModelId::Opus5.api_id(), "max_tokens": 8, "messages": messages});
+        let (code, answer) = msg(MESSAGES_PATH, &body, &key);
+        eprintln!(
+            "[report] {label}: documented as a 400; this endpoint answered {code} ({})",
+            if code == 400 { "enforced" } else { "more permissive than the documentation" }
+        );
+        assert!(code == 200 || code == 400, "unexpected status {code}: {answer}");
+    }
+}
+
 /// A cited document: the model answers from the source and names where it looked.
 #[test]
 fn live_ok_a_cited_document_produces_a_citation() {

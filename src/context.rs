@@ -41,6 +41,20 @@
 //! // `SystemBlock`s, which have no image or tool-result form.
 //! let _ = Message::System(vec![ContentBlock::text("no")]);
 //! ```
+//!
+//! The placement rules are therefore checked in one place each, and the check
+//! cannot be walked around: `messages` is private and there is no `&mut` path to
+//! it, so [`Context::push_system`] is the only way a system message enters a
+//! conversation and [`crate::request::Request::new`] the only way one leaves.
+//!
+//! ```compile_fail
+//! use anthropic::context::Context;
+//!
+//! // The field is private, so a leading system message cannot be installed
+//! // behind `push_system`'s back.
+//! let mut ctx = Context::new();
+//! ctx.messages.push(anthropic::context::Message::System(Vec::new()));
+//! ```
 
 use crate::block::{ContentBlock, TextBlock, ToolResultContent};
 use crate::system::SystemBlock;
@@ -627,6 +641,16 @@ impl Context {
         })
     }
 
+    /// Where the first mid-conversation system message sits, if any.
+    ///
+    /// Read by [`crate::request::Request::new`] to refuse the conversation on a
+    /// model that does not accept one — see
+    /// [`crate::model::ModelId::accepts_mid_conversation_system_message`]. The
+    /// index is what a caller needs: it names the entry to remove.
+    pub(crate) fn first_system_message(&self) -> Option<usize> {
+        self.messages.iter().position(|message| matches!(message, Message::System(_)))
+    }
+
     // ── Internals ───────────────────────────────────────────────────────────
 
     fn tail_position(&self) -> Result<(usize, usize), RollCacheError> {
@@ -924,6 +948,82 @@ mod tests {
         // a request again.
         ctx.push_assistant_text("Une pomme.");
         assert_eq!(ctx.misplaced_system_message(), Some(1), "the user turn at index 2 is still in the way");
+    }
+
+    /// The documented placement rules, one assertion each, so a regression names
+    /// the rule it broke. Source: the "Limitations" section of
+    /// <https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages>.
+    #[test]
+    fn every_documented_placement_rule_is_enforced() {
+        // "A system message cannot be the first entry in messages."
+        assert_eq!(Context::new().push_system_text("x").err(), Some(SystemMessageError::First));
+
+        // "must immediately follow a user turn" — and a user turn carrying
+        // tool_result blocks counts, which is the agentic-loop position.
+        let mut after_tool_result = Context::new();
+        after_tool_result.push_user_text("run the tests");
+        after_tool_result.push_assistant(vec![ContentBlock::tool_use("toolu_01", "run_tests", serde_json::json!({}))]);
+        after_tool_result.push_tool_result("toolu_01", ToolResultContent::Text("12 passed".into()));
+        assert!(after_tool_result.push_system_text("the user also asked for a changelog entry").is_ok());
+        assert_eq!(after_tool_result.misplaced_system_message(), None, "ending the array is legal");
+
+        // "It cannot sit between a tool_use block and its tool_result": the only
+        // entry between them is the assistant turn holding the `tool_use`, and a
+        // system message may not follow an assistant turn, so that position is
+        // exactly `AfterAssistant`.
+        let mut between = Context::new();
+        between.push_user_text("run the tests");
+        between.push_assistant(vec![ContentBlock::tool_use("toolu_01", "run_tests", serde_json::json!({}))]);
+        assert_eq!(between.push_system_text("x").err(), Some(SystemMessageError::AfterAssistant));
+
+        // "must precede an assistant turn or end the array", checked at the
+        // request because a later append can break it.
+        let mut then_user = Context::new();
+        then_user.push_user_text("hi");
+        then_user.push_system_text("be terse").unwrap();
+        then_user.push_user_text("again");
+        assert_eq!(then_user.misplaced_system_message(), Some(1));
+
+        // "Consecutive system messages are accepted and treated as a single
+        // system section, which follows the same placement rule as a whole."
+        let mut chain = Context::new();
+        chain.push_user_text("hi");
+        chain.push_system_text("first").unwrap();
+        chain.push_system_text("second").unwrap();
+        assert_eq!(chain.misplaced_system_message(), None);
+        chain.push_assistant_text("ok");
+        assert_eq!(chain.misplaced_system_message(), None, "the section precedes an assistant turn");
+    }
+
+    /// Availability is per model, so the same conversation is a request on Opus 5
+    /// and a refusal on Sonnet 5. The refusal names the model and the index.
+    #[test]
+    fn a_system_message_is_refused_on_a_model_that_does_not_accept_one() {
+        use crate::request::{Request, RequestError};
+
+        let mut ctx = Context::new().with_system("you are helpful");
+        ctx.push_user_text("name a fruit");
+        ctx.push_system_text("Answer in French.").unwrap();
+
+        assert!(Request::new(&ctx, Model::opus_5(), 1024).is_ok(), "documented as available");
+        assert!(Request::new(&ctx, Model::opus_4_8(), 1024).is_ok(), "documented as available");
+        assert!(Request::new(&ctx, Model::fable_5(), 1024).is_ok(), "documented as available");
+
+        for model in [Model::from(Model::sonnet_5()), Model::sonnet_4_6().into(), Model::haiku_4_5().into()] {
+            let id = model.id();
+            assert_eq!(
+                Request::new(&ctx, model, 1024).err(),
+                Some(RequestError::MidConversationSystemMessageUnsupported { model: id, at: 1 }),
+                "{} is not on the documented availability list",
+                id.api_id(),
+            );
+        }
+
+        // Without a system message the same models are fine, so the refusal is
+        // about the pairing and not about the model.
+        let mut plain = Context::new();
+        plain.push_user_text("name a fruit");
+        assert!(Request::new(&plain, Model::sonnet_5(), 1024).is_ok());
     }
 
     /// A cache breakpoint lands on a system message's inner block, which is where

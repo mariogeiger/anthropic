@@ -55,6 +55,17 @@ its effort lives *inside* its thinking state rather than beside it.
 Mutually exclusive settings are sum types, never two optional fields a caller
 must keep in sync.
 
+Where the type stops is worth stating, because it is a principle and not an
+excuse. A model-specific *parameter* lives on the model's type, so the bad
+request is unwritable. A refused combination that pairs the model with the
+*conversation* is a different shape: the two are deliberately separate types so
+one conversation can be sent to several models, and making the pairing
+unrepresentable would parameterize the conversation by model and destroy exactly
+that. A mid-conversation system message on Sonnet 5 is that shape, so it is a
+typed refusal in `Request::new` that names the model. When impossibility would
+cost more generality than the 400 it prevents, refuse at the one point where both
+facts are known, and say in a doc comment why the type could not carry it.
+
 ### No invented defaults, no normalization
 
 Defaults come from the provider's documentation. The crate does not invent its

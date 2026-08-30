@@ -169,6 +169,44 @@ pub enum RequestError {
         /// How many tools were declared, all of them deferred.
         tools: usize,
     },
+    /// The conversation holds a mid-conversation system message and this model
+    /// does not accept one. The documentation states the feature is available on
+    /// Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude
+    /// Sonnet 5; use the top-level `system` field instead".
+    ///
+    /// # Why this is refused here and not made unrepresentable
+    ///
+    /// This crate's rule is that a refused combination should not compile, and a
+    /// type per model is how it holds that rule. The rule is followed here as far
+    /// as it reaches, and this is where it stops.
+    ///
+    /// A model-specific *parameter* lives on the model's own type, so omitting it
+    /// there makes the bad request unwritable with no runtime check at all. This
+    /// combination is not of that shape. It pairs the model, which is a per-call
+    /// parameter, with the conversation's message list, which is
+    /// [`crate::context::Context`] — and those are deliberately different types
+    /// so that *one* conversation can be sent to *several* models. Making the
+    /// pairing unrepresentable would mean parameterizing `Context` by model,
+    /// which destroys exactly that property: a conversation carrying an
+    /// instruction added mid-session could then never be counted against a Sonnet
+    /// 5 tokenizer, or replayed on a cheaper model, even though both are
+    /// legitimate. The type would buy one 400 at the cost of the crate's central
+    /// separation.
+    ///
+    /// It also cannot be caught at append time. `Context::push_system` does not
+    /// know which model the conversation will be sent to, and by design never
+    /// will. The request is the first place both facts are present, which makes
+    /// it the only place the check can live — the same reason
+    /// [`Self::MaxTokensOutOfRange`] and
+    /// [`Self::SystemMessageNotFollowedByAssistant`] are here.
+    ///
+    /// So the refusal is typed, names the model, and names the index to remove.
+    MidConversationSystemMessageUnsupported {
+        /// The model that does not accept one.
+        model: ModelId,
+        /// Index in `messages` of the first system message, the entry to remove.
+        at: usize,
+    },
 }
 
 impl std::fmt::Display for RequestError {
@@ -186,6 +224,12 @@ impl std::fmt::Display for RequestError {
             RequestError::EveryToolDeferred { tools } => {
                 write!(f, "all {tools} declared tools are deferred; at least one must not be")
             }
+            RequestError::MidConversationSystemMessageUnsupported { model, at } => write!(
+                f,
+                "{} does not accept a mid-conversation system message; \
+                 remove the one at index {at} and use the top-level system prompt",
+                model.api_id()
+            ),
         }
     }
 }
@@ -230,6 +274,13 @@ impl<'a> Request<'a> {
         // final — see `RequestError::SystemMessageNotFollowedByAssistant`.
         if let Some(at) = context.misplaced_system_message() {
             return Err(RequestError::SystemMessageNotFollowedByAssistant { at });
+        }
+        // Availability is per model, and the model is only known here — see
+        // `RequestError::MidConversationSystemMessageUnsupported`.
+        if !model.id().accepts_mid_conversation_system_message()
+            && let Some(at) = context.first_system_message()
+        {
+            return Err(RequestError::MidConversationSystemMessageUnsupported { model: model.id(), at });
         }
         let tools = context.tools();
         if !tools.is_empty() && tools.iter().all(|tool| tool.defer_loading) {

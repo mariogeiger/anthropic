@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.5.0
+
+Mid-conversation system messages are not a second spelling of the top-level
+`system` field. They are disjoint by position and limited by model, and the crate
+now enforces the second of those and writes down both.
+
+### Mid-conversation system messages are refused on a model that does not accept one
+
+The documentation states the feature is available on Fable 5, Mythos 5, Opus 4.8
+and Opus 5, and "not available on Claude Sonnet 5; use the top-level `system`
+field instead". The crate enforced every *placement* rule already and none of the
+*availability* rule, so a Sonnet 5 request carrying a mid-conversation system
+message serialized happily and earned a 400.
+
+- `ModelId::accepts_mid_conversation_system_message()` is new: a closed list, so
+  adding a model states its answer rather than inheriting a guess. Mid-conversation
+  tool changes share the availability and need no second predicate, because a
+  `tool_addition` or `tool_removal` block can only travel inside a system message.
+- `RequestError::MidConversationSystemMessageUnsupported { model, at }` is new.
+  `Request::new` returns it, naming the model and the index of the entry to remove.
+- Its doc comment justifies why this is a runtime refusal rather than an
+  unrepresentable combination: it pairs the model with the conversation, and those
+  are separate types precisely so one conversation can be sent to several models.
+  Parameterizing `Context` by model would buy one 400 and cost that. `SOUL.md` now
+  states the same boundary as a principle.
+
+### Why both positions exist, written down
+
+The two forms produce identical behaviour and identical token counts, which is why
+the question comes up. The `system` module now records that they are nonetheless
+disjoint: by placement, because a system message may not be first and the
+top-level field is the only legal home for an instruction that applies from the
+start; and by model, because the top-level field is the only portable one. Both
+rules are cited to the Anthropic documentation.
+
+### Placement rules: no change in behaviour, one test per rule
+
+The audit found no placement gap. Every documented rule was already enforced —
+not first, must follow a user turn (`tool_result` blocks included), must end the
+array or precede an assistant turn, never between a `tool_use` and its
+`tool_result`, and consecutive system messages treated as one section. What was
+missing was a test naming each rule, so a regression now names the rule it broke.
+The "never between a `tool_use` and its `tool_result`" case is the existing
+`AfterAssistant` refusal, because the only entry between them is the assistant
+turn holding the `tool_use`.
+
+A `compile_fail` doctest now proves `Context::messages` is private, which is what
+makes `push_system` the only door and its checks unavoidable. It fails with
+E0616, verified.
+
+### A gateway's 200 is not evidence of legality
+
+`AGENTS.md` recorded only the case where a deployment refuses what the API
+documents. The reverse direction matters as much and is not symmetric: our gateway
+*accepts* a leading system message, a documented 400, and `count_tokens` validates
+placement not at all. It does enforce the successor rule, so the permissiveness is
+specific rather than general — which is exactly why a placement or per-model rule
+can only be established from the documentation, never from a successful probe.
+`tests/live_api.rs` gained
+`live_report_the_gateway_is_more_permissive_than_the_documented_placement_rules`,
+which reports the status rather than asserting one, so an endpoint that changes its
+mind in either direction becomes visible without a false failure.
+
+The Sonnet 5 rule cannot be checked live on this gateway: only the two Opus models
+are reachable there, so that rule rests on the documentation alone.
+
 ## 0.4.0
 
 The crate's mission is now written down — *represent the entire Anthropic Messages
