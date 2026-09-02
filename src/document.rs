@@ -185,7 +185,8 @@ impl SearchResultBlock {
 /// arrives follows from what was cited — a plain-text document cites characters, a
 /// PDF cites pages, a structured source cites blocks — so the variant *is* the
 /// answer to "how precisely can I point at this".
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum Citation {
     /// A character range of a plain-text document.
     CharLocation {

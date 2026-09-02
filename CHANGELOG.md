@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- Assistant text can now replay the citations the provider attached to it.
+  `TextBlock::with_citations` keeps each complete typed citation beside the text
+  it grounds.
+- `ThinkingBlock::replay` and `RedactedThinkingBlock::replay` construct the
+  exact opaque blocks a stateless tool loop must return unchanged.
+- Unknown produced content blocks now retain their complete JSON value instead
+  of only their type name, so a consumer can preserve or explicitly reject
+  them rather than silently lose provider state.
+
+  `anthropic` is now 0.7.0.
+
 ## 0.6.0
 
 The conversation type now holds the wire order instead of rebuilding it. Pure

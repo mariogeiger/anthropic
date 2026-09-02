@@ -116,6 +116,8 @@ pub enum ToolResultItem {
 pub struct TextBlock {
     /// The text.
     pub text: String,
+    /// Sources grounding this assistant text when it is replayed.
+    pub citations: Vec<crate::document::Citation>,
     pub(crate) cache_control: Option<CacheControl>,
 }
 
@@ -139,7 +141,13 @@ impl TextBlock {
     /// Text with no cache breakpoint. A breakpoint is placed only through a
     /// [`crate::context::CacheSlot`], so there is no constructor that takes one.
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cache_control: None }
+        Self { text: text.into(), citations: Vec::new(), cache_control: None }
+    }
+
+    /// Attaches the sources the model emitted beside this assistant text.
+    pub fn with_citations(mut self, citations: Vec<crate::document::Citation>) -> Self {
+        self.citations = citations;
+        self
     }
 }
 
@@ -235,6 +243,13 @@ pub struct ThinkingBlock {
     pub(crate) cache_control: Option<CacheControl>,
 }
 
+impl ThinkingBlock {
+    /// Replays one complete thinking block exactly as the model returned it.
+    pub fn replay(thinking: impl Into<String>, signature: impl Into<String>) -> Self {
+        Self { thinking: thinking.into(), signature: signature.into(), cache_control: None }
+    }
+}
+
 /// A redacted thinking block to replay into the conversation, opaque bytes and all.
 #[derive(Debug, Clone, Serialize)]
 pub struct RedactedThinkingBlock {
@@ -242,6 +257,13 @@ pub struct RedactedThinkingBlock {
     pub data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cache_control: Option<CacheControl>,
+}
+
+impl RedactedThinkingBlock {
+    /// Replays one redacted thinking block without interpreting its payload.
+    pub fn replay(data: impl Into<String>) -> Self {
+        Self { data: data.into(), cache_control: None }
+    }
 }
 
 /// One block of content to send.
@@ -279,12 +301,15 @@ pub enum ContentBlock {
 #[derive(Serialize)]
 struct UntaggedTextBlock<'a> {
     text: &'a str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    citations: &'a Vec<crate::document::Citation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: &'a Option<CacheControl>,
 }
 
 fn serialize_content_text<S: serde::Serializer>(block: &TextBlock, s: S) -> Result<S::Ok, S::Error> {
-    UntaggedTextBlock { text: &block.text, cache_control: &block.cache_control }.serialize(s)
+    UntaggedTextBlock { text: &block.text, citations: &block.citations, cache_control: &block.cache_control }
+        .serialize(s)
 }
 
 impl ContentBlock {
