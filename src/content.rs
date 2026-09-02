@@ -192,6 +192,8 @@ pub enum StreamedBlock {
     Unmodeled {
         /// The block's `type`.
         kind: String,
+        /// The whole block, so a consumer never has to drop an unknown kind.
+        value: Value,
     },
 }
 
@@ -203,7 +205,7 @@ impl StreamedBlock {
             StreamedBlock::Thinking { .. } => "thinking",
             StreamedBlock::RedactedThinking { .. } => "redacted_thinking",
             StreamedBlock::ToolUse { .. } => "tool_use",
-            StreamedBlock::Unmodeled { kind } => kind,
+            StreamedBlock::Unmodeled { kind, .. } => kind,
         }
     }
 
@@ -241,7 +243,7 @@ impl StreamedBlock {
                 name: require_str(block, "name")?.to_owned(),
                 input: ToolInput::from_json(block.get("input")),
             },
-            other => StreamedBlock::Unmodeled { kind: other.to_owned() },
+            other => StreamedBlock::Unmodeled { kind: other.to_owned(), value: block.clone() },
         })
     }
 
@@ -477,7 +479,13 @@ mod tests {
     fn unmodeled_kinds_decode_rather_than_fail() {
         let block =
             StreamedBlock::decode(&json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"})).unwrap();
-        assert_eq!(block, StreamedBlock::Unmodeled { kind: "web_search_tool_result".to_owned() });
+        assert_eq!(
+            block,
+            StreamedBlock::Unmodeled {
+                kind: "web_search_tool_result".to_owned(),
+                value: json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"}),
+            }
+        );
         assert_eq!(block.kind(), "web_search_tool_result");
 
         let delta = BlockDelta::decode(&json!({"type": "constellation_delta"})).unwrap();

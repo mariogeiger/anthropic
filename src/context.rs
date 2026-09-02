@@ -426,7 +426,10 @@ impl Serialize for SystemPrompt {
             None => self.text.serialize(s),
             // A one-element array of text blocks, which is the only shape that can
             // carry a breakpoint. `TextBlock` already serializes as one.
-            Some(_) => [TextBlock { text: self.text.clone(), cache_control: self.cache_control }].serialize(s),
+            Some(_) => {
+                [TextBlock { text: self.text.clone(), citations: Vec::new(), cache_control: self.cache_control }]
+                    .serialize(s)
+            }
         }
     }
 }
