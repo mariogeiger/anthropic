@@ -5,8 +5,9 @@
 //! is its own type: a parameter Sonnet 4.6 rejects does not exist on `Sonnet4_6`,
 //! and the compiler refuses the request the API would have refused.
 //!
-//! The differences are not cosmetic. Thinking is always on for Fable 5 and has no
-//! off state; on Opus 4.8 "off" is an *omitted* `thinking` field; on Opus 5 and
+//! The differences are not cosmetic. Thinking is always on for Fable 5.1 and
+//! Fable 5 and has no off state; Fable 5.1 additionally refuses forced tool
+//! choice. On Opus 4.8, "off" is an *omitted* `thinking` field; on Opus 5 and
 //! Sonnet 5 an omitted field means thinking stays *on*, so off must be stated
 //! explicitly. Opus 5 goes further and makes the accepted effort range depend on
 //! whether thinking is on, which is why its effort lives inside
@@ -85,7 +86,9 @@ impl Default for Temperature {
 /// field is meaningful (e.g. `CountRequest`, which ignores sampling/thinking).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelId {
-    /// `claude-fable-5`, the frontier tier.
+    /// `claude-fable-5-1`, the current frontier tier.
+    Fable5_1,
+    /// `claude-fable-5`, the prior frontier tier.
     Fable5,
     /// `claude-opus-5`, the current Opus tier.
     Opus5,
@@ -207,6 +210,7 @@ impl ModelId {
     /// The `model` field value sent on the wire.
     pub fn api_id(self) -> &'static str {
         match self {
+            ModelId::Fable5_1 => "claude-fable-5-1",
             ModelId::Fable5 => "claude-fable-5",
             ModelId::Opus5 => "claude-opus-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
@@ -224,7 +228,7 @@ impl ModelId {
     /// some platforms differ — e.g. Fable 5 is 1024 on Amazon Bedrock).
     pub fn min_cacheable_prefix_tokens(self) -> u32 {
         match self {
-            ModelId::Fable5 => 512,
+            ModelId::Fable5_1 | ModelId::Fable5 => 512,
             ModelId::Opus5 => 512,
             ModelId::Opus4_8 => 1_024,
             ModelId::Sonnet5 => 1_024,
@@ -236,7 +240,7 @@ impl ModelId {
     /// Total context-window size in tokens. Input and output share this budget.
     pub fn context_window_tokens(self) -> u32 {
         match self {
-            ModelId::Fable5 => 1_000_000,
+            ModelId::Fable5_1 | ModelId::Fable5 => 1_000_000,
             ModelId::Opus5 => 1_000_000,
             ModelId::Opus4_8 => 1_000_000,
             ModelId::Sonnet5 => 1_000_000,
@@ -264,9 +268,18 @@ impl ModelId {
     /// for why that is a runtime refusal rather than a type error.
     pub fn accepts_mid_conversation_system_message(self) -> bool {
         match self {
-            ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
+            ModelId::Fable5_1 | ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
             ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
         }
+    }
+
+    /// Whether this model accepts `tool_choice` values that force a call.
+    ///
+    /// Fable 5.1 rejects both `any` and a named `tool`: always-on thinking must
+    /// be allowed to run before the model chooses a call. Every earlier model
+    /// carried here accepts the full tool-choice vocabulary.
+    pub fn accepts_forced_tool_choice(self) -> bool {
+        !matches!(self, ModelId::Fable5_1)
     }
 
     /// Maximum output tokens in a single synchronous Messages API response.
@@ -275,7 +288,7 @@ impl ModelId {
     /// which this crate does not model.)
     pub fn max_output_tokens(self) -> u32 {
         match self {
-            ModelId::Fable5 => 128_000,
+            ModelId::Fable5_1 | ModelId::Fable5 => 128_000,
             ModelId::Opus5 => 128_000,
             ModelId::Opus4_8 => 128_000,
             ModelId::Sonnet5 => 128_000,
@@ -288,6 +301,7 @@ impl ModelId {
     /// most extensive and reliable (per the Anthropic models docs).
     pub fn knowledge_cutoff(self) -> YearMonth {
         let (year, month) = match self {
+            ModelId::Fable5_1 => (2026, Month::June),
             ModelId::Fable5 => (2026, Month::January),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
@@ -301,6 +315,7 @@ impl ModelId {
     /// Training data cutoff: the broader end of the training-data date range.
     pub fn training_cutoff(self) -> YearMonth {
         let (year, month) = match self {
+            ModelId::Fable5_1 => (2026, Month::June),
             ModelId::Fable5 => (2026, Month::January),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
@@ -314,7 +329,7 @@ impl ModelId {
     /// Standard list price per MTok (see [`Pricing`] for caveats).
     pub fn price_per_mtok(self) -> Pricing {
         let (input, output) = match self {
-            ModelId::Fable5 => (1_000, 5_000),
+            ModelId::Fable5_1 | ModelId::Fable5 => (1_000, 5_000),
             ModelId::Opus5 => (500, 2_500),
             ModelId::Opus4_8 => (500, 2_500),
             // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
@@ -328,6 +343,8 @@ impl ModelId {
 
 /// A Claude model plus its per-call parameters.
 pub enum Model {
+    /// Fable 5.1 and its parameters.
+    Fable5_1(Fable5_1),
     /// Fable 5 and its parameters.
     Fable5(Fable5),
     /// Opus 5 and its parameters.
@@ -346,6 +363,7 @@ impl Model {
     /// Identity without per-call parameters.
     pub fn id(&self) -> ModelId {
         match self {
+            Model::Fable5_1(_) => ModelId::Fable5_1,
             Model::Fable5(_) => ModelId::Fable5,
             Model::Opus5(_) => ModelId::Opus5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
@@ -368,6 +386,10 @@ impl Model {
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
+    /// Fable 5.1 with its default parameters.
+    pub fn fable_5_1() -> Fable5_1 {
+        Fable5_1::default()
+    }
     /// Fable 5 with its default parameters.
     pub fn fable_5() -> Fable5 {
         Fable5::default()
@@ -394,6 +416,11 @@ impl Model {
     }
 }
 
+impl From<Fable5_1> for Model {
+    fn from(p: Fable5_1) -> Self {
+        Model::Fable5_1(p)
+    }
+}
 impl From<Fable5> for Model {
     fn from(p: Fable5) -> Self {
         Model::Fable5(p)
@@ -424,6 +451,52 @@ impl From<Haiku4_5> for Model {
         Model::Haiku4_5(p)
     }
 }
+
+// ── Fable 5.1 ────────────────────────────────────────────────────────────────
+
+/// Fable 5.1's per-call parameters.
+///
+/// Thinking is always adaptive: disabling it and the legacy fixed-budget form
+/// are both rejected. Unlike Fable 5, forced tool choice is also rejected; that
+/// request-level relation is enforced by [`crate::request::Request::with_tool_choice`].
+///
+/// ```compile_fail
+/// let _ = anthropic::request::Model::fable_5_1().with_thinking_off();
+/// ```
+pub struct Fable5_1 {
+    /// Whether the provider returns a reasoning summary. `Omitted` by default.
+    pub display: ThinkingDisplay,
+    /// How much work the model spends over the complete supported range.
+    pub effort: Fable5_1Effort,
+}
+
+impl Default for Fable5_1 {
+    fn default() -> Self {
+        Self { display: ThinkingDisplay::Omitted, effort: Fable5Effort::High }
+    }
+}
+
+impl Fable5_1 {
+    /// The documented defaults: adaptive thinking, hidden summaries, high effort.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets how much work the model spends.
+    pub fn with_effort(mut self, effort: Fable5_1Effort) -> Self {
+        self.effort = effort;
+        self
+    }
+
+    /// Chooses whether provider-safe reasoning summaries are returned.
+    pub fn with_display(mut self, display: ThinkingDisplay) -> Self {
+        self.display = display;
+        self
+    }
+}
+
+/// Fable 5.1 accepts the same five effort levels as Fable 5.
+pub type Fable5_1Effort = Fable5Effort;
 
 // ── Fable 5 ──────────────────────────────────────────────────────────────────
 // Frontier tier. No sampling (temperature/top_p/top_k rejected). Thinking is

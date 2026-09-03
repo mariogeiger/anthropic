@@ -21,6 +21,13 @@
 //! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
 //! customers, so they exercise 200/400 on any org with a `.key`.
 //!
+//! The Fable 5.1 cases (added 2026-09-02) encode its published GA behavior.
+//! A bounded probe against the configured NVIDIA inference gateway found that
+//! the gateway's model catalog does not yet list Fable 5.1 and its credential
+//! rejects the model with `key_model_access_denied`; this is an access result,
+//! not evidence about the first-party request grammar. The tests therefore keep
+//! their first-party 200/400 assertions and skip only where the model is absent.
+//!
 //! The API-coverage cases (added 2026-08-30) were exercised against the same
 //! translating gateway: a mid-conversation system message after a user turn,
 //! *two* of them in a row, cited documents and cited search results both
@@ -46,8 +53,8 @@ use anthropic::block::{ContentBlock, TextBlock};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use anthropic::request::{
-    CountRequest, EndUserId, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort, Opus5ThinkingOffEffort,
-    OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
+    CountRequest, EndUserId, Fable5_1Effort, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort,
+    Opus5ThinkingOffEffort, OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
 use anthropic::response::Response;
 use anthropic::{CacheTtl, MESSAGES_PATH, ServiceTier, ThinkingDisplay};
@@ -142,7 +149,7 @@ fn user_ctx(text: &str) -> Context {
 /// stays green on orgs without access.
 fn fable5_unavailable(code: u16, body: &Value) -> bool {
     if code == 404 && body["error"]["type"] == "not_found_error" {
-        eprintln!("[skip] {}: Claude Fable 5 not available on this org", function_name());
+        eprintln!("[skip] {}: requested Claude Fable model not available on this org", function_name());
         return true;
     }
     false
@@ -168,6 +175,21 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
     let model = Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Summarized).with_effort(Opus4_8Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_fable_5_1_summarized_xhigh() {
+    let key = key_or_skip!();
+    let ctx = user_ctx("Think briefly, then reply with the single word: ok");
+    let model = Model::fable_5_1().with_display(ThinkingDisplay::Summarized).with_effort(Fable5_1Effort::Xhigh);
+    let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
+    if fable5_unavailable(code, &body) {
+        return;
+    }
+    assert_ok(code, &body);
+    assert_eq!(body["model"], "claude-fable-5-1");
+    let response = Response::decode(&body.to_string()).expect("Fable 5.1 response decodes");
+    assert!(!response.blocks.is_empty());
 }
 
 #[test]
@@ -609,6 +631,36 @@ fn live_400_opus_legacy_thinking() {
     });
     let (code, resp) = msg(MESSAGES_PATH, &body, &key);
     assert_400(code, &resp);
+}
+
+#[test]
+fn live_400_fable_5_1_rejects_disabled_thinking_and_forced_tool_choice() {
+    let key = key_or_skip!();
+    let cases = [
+        json!({
+            "model": "claude-fable-5-1", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled"},
+        }),
+        json!({
+            "model": "claude-fable-5-1", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": 0.5,
+        }),
+        json!({
+            "model": "claude-fable-5-1", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "call noop"}],
+            "tools": [{"name": "noop", "input_schema": {"type": "object", "properties": {}}}],
+            "tool_choice": {"type": "tool", "name": "noop"},
+        }),
+    ];
+    for body in cases {
+        let (code, response) = msg(MESSAGES_PATH, &body, &key);
+        if fable5_unavailable(code, &response) {
+            return;
+        }
+        assert_400(code, &response);
+    }
 }
 
 #[test]

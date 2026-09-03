@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.8.0
+
+- Claude Fable 5.1 is now a first-class model: `Model::fable_5_1`,
+  `Fable5_1`, `Fable5_1Effort`, and `ModelId::Fable5_1`. Its request always
+  carries adaptive thinking, accepts all five effort levels from `low` through
+  `max`, and offers only omitted or summarized reasoning display. There is no
+  temperature, thinking-off, or fixed-budget path because the API refuses each.
+- Its documented facts are recorded beside the other models: API ID
+  `claude-fable-5-1`, 1M-token context, 128K maximum output, 512-token cache
+  minimum, June 2026 knowledge and training cutoffs, and $10/$50 per-million
+  base input/output pricing. Mid-conversation system messages are supported.
+- Fable 5.1 rejects forced tool choice. `Request::with_tool_choice` now checks
+  the request's model and returns `RequestError::ForcedToolChoiceUnsupported`
+  for `any` or a named tool on Fable 5.1; `auto` and `none` remain valid.
+- Bounded live probes were run against the configured NVIDIA inference gateway.
+  Its model catalog does not yet list Fable 5.1, and attempts through the AWS,
+  Azure, first-party, and unqualified model names returned
+  `key_model_access_denied`, while the same bounded control request to Opus 5
+  returned 200. This establishes the deployment gap, not the first-party grammar; gated first-party tests retain the documented 200/400
+  assertions for an organization with access.
+- `request.rs` is again below 1,000 lines: its tests moved unchanged to
+  `request/tests.rs`.
+
+### Breaking: `Request::with_tool_choice` can refuse a model-choice pair
+
+The method now returns `Result<Request, RequestError>` rather than `Request`.
+
+**Migration.** Propagate or handle the result:
+
+```text
+request.with_tool_choice(choice)
+→ request.with_tool_choice(choice)?
+```
+
+This is the only way to keep one reusable `ToolChoice` vocabulary while making
+Fable 5.1's rejected pair impossible to serialize.
+
+  `anthropic` is now 0.8.0.
+
 ## 0.7.0
 
 - Assistant text can now replay the citations the provider attached to it.
