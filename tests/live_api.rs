@@ -22,11 +22,11 @@
 //! customers, so they exercise 200/400 on any org with a `.key`.
 //!
 //! The Fable 5.1 cases (added 2026-09-02) encode its published GA behavior.
-//! A bounded probe against the configured NVIDIA inference gateway found that
-//! the gateway's model catalog does not yet list Fable 5.1 and its credential
-//! rejects the model with `key_model_access_denied`; this is an access result,
-//! not evidence about the first-party request grammar. The tests therefore keep
-//! their first-party 200/400 assertions and skip only where the model is absent.
+//! Stable controls and all five beta headers were exercised first-party on
+//! 2026-09-03. A separate bounded probe against the configured NVIDIA inference
+//! gateway found that its model catalog does not yet list Fable 5.1 and its
+//! credential rejects the model with `key_model_access_denied`; this deployment
+//! gap remains recorded rather than being mistaken for the first-party grammar.
 //!
 //! The API-coverage cases (added 2026-08-30) were exercised against the same
 //! translating gateway: a mid-conversation system message after a user turn,
@@ -53,11 +53,12 @@ use anthropic::block::{ContentBlock, TextBlock};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use anthropic::request::{
-    CountRequest, EndUserId, Fable5_1Effort, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort,
-    Opus5ThinkingOffEffort, OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
+    CountRequest, EndUserId, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Model, ModelId, Opus4_8Effort,
+    Opus5Effort, Opus5ThinkingOffEffort, OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
 use anthropic::response::Response;
-use anthropic::{CacheTtl, MESSAGES_PATH, ServiceTier, ThinkingDisplay};
+use anthropic::system::{PerMessageEffort, SystemBlock, ToolReference};
+use anthropic::{BetaFeature, CacheTtl, MESSAGES_PATH, PrefixMismatchBehavior, ServiceTier, ThinkingDisplay};
 use serde_json::{Value, json};
 
 // ── Harness ──────────────────────────────────────────────────────────────────
@@ -90,6 +91,15 @@ fn function_name() -> &'static str {
 /// Retries transport-level failures (e.g. connection resets) with backoff — a
 /// real HTTP response, 4xx included, is the API's answer and returns at once.
 fn post<T: serde::Serialize>(path: &str, body: &T, key: &str) -> (u16, Value) {
+    post_with_beta(path, body, key, None)
+}
+
+fn post_request(body: &Request<'_>, key: &str) -> (u16, Value) {
+    let beta = body.required_beta_features().map(|feature| feature.as_str()).collect::<Vec<_>>().join(",");
+    post_with_beta(MESSAGES_PATH, body, key, (!beta.is_empty()).then_some(beta.as_str()))
+}
+
+fn post_with_beta<T: serde::Serialize>(path: &str, body: &T, key: &str, beta: Option<&str>) -> (u16, Value) {
     let url = format!("{}{}", anthropic::API_BASE, path);
     let payload = serde_json::to_string(body).expect("serialize body");
     let mut last = String::new();
@@ -97,12 +107,14 @@ fn post<T: serde::Serialize>(path: &str, body: &T, key: &str) -> (u16, Value) {
         if attempt > 0 {
             std::thread::sleep(std::time::Duration::from_millis(400 * attempt));
         }
-        match ureq::post(&url)
+        let mut request = ureq::post(&url)
             .set(anthropic::HEADER_API_KEY, key)
             .set(anthropic::HEADER_VERSION, anthropic::VERSION)
-            .set("content-type", "application/json")
-            .send_string(&payload)
-        {
+            .set("content-type", "application/json");
+        if let Some(beta) = beta {
+            request = request.set(anthropic::HEADER_BETA, beta);
+        }
+        match request.send_string(&payload) {
             Ok(resp) => {
                 let code = resp.status();
                 let text = resp.into_string().expect("read body");
@@ -181,7 +193,7 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
 fn live_ok_fable_5_1_summarized_xhigh() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply with the single word: ok");
-    let model = Model::fable_5_1().with_display(ThinkingDisplay::Summarized).with_effort(Fable5_1Effort::Xhigh);
+    let model = Model::fable_5_1().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5_1Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
     if fable5_unavailable(code, &body) {
         return;
@@ -190,6 +202,53 @@ fn live_ok_fable_5_1_summarized_xhigh() {
     assert_eq!(body["model"], "claude-fable-5-1");
     let response = Response::decode(&body.to_string()).expect("Fable 5.1 response decodes");
     assert!(!response.blocks.is_empty());
+}
+
+#[test]
+fn live_ok_fable_5_1_beta_controls_and_inferred_headers() {
+    let key = key_or_skip!();
+    let mut ctx = Context::new(Opening::None).with_tools(vec![Tool::new("noop", json!({"type": "object"}))]);
+    ctx.push_effort(PerMessageEffort::Low);
+    ctx.push_user_text("Reply with the single word: ok");
+    ctx.push_system(vec![SystemBlock::tool_removal(ToolReference::tool("noop"))]).unwrap();
+    ctx.push_turn_scoped_text("Use one word.").unwrap();
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 1)
+        .unwrap()
+        .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)
+        .unwrap();
+    assert_eq!(request.required_beta_features().count(), 5);
+    let (code, body) = post_request(&request, &key);
+    if fable5_unavailable(code, &body) {
+        return;
+    }
+    assert_ok(code, &body);
+    let response = Response::from_json(&body).unwrap();
+    assert_eq!(response.input_transformations, Some(Vec::new()));
+}
+
+#[test]
+fn live_ok_fable_5_updates_display() {
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply ok");
+    let request = Request::new(&ctx, Model::fable_5().with_display(FableThinkingDisplay::Updates), 1).unwrap();
+    let (code, body) = post_request(&request, &key);
+    if fable5_unavailable(code, &body) {
+        return;
+    }
+    assert_ok(code, &body);
+}
+
+#[test]
+fn live_ok_opus_4_8_binding_controls() {
+    let key = key_or_skip!();
+    let ctx = user_ctx("Reply ok");
+    let request = Request::new(&ctx, Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Omitted), 1)
+        .unwrap()
+        .with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error)
+        .unwrap();
+    let (code, body) = post_request(&request, &key);
+    assert_ok(code, &body);
+    assert_eq!(body["input_transformations"], json!([]));
 }
 
 #[test]
@@ -212,7 +271,7 @@ fn live_ok_fable_5_summarized_xhigh() {
     // visible-reasoning display.
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
-    let model = Model::fable_5().with_display(ThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh);
+    let model = Model::fable_5().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     if fable5_unavailable(code, &body) {
         return;
@@ -661,6 +720,57 @@ fn live_400_fable_5_1_rejects_disabled_thinking_and_forced_tool_choice() {
         }
         assert_400(code, &response);
     }
+}
+
+#[test]
+fn live_400_fable_5_1_beta_controls_require_their_headers() {
+    let key = key_or_skip!();
+    let common = || json!({"model": "claude-fable-5-1", "max_tokens": 1});
+    let mut updates = common();
+    updates["thinking"] = json!({"type": "adaptive", "display": "updates"});
+    updates["messages"] = json!([{"role": "user", "content": "hi"}]);
+    let mut binding = common();
+    binding["thinking"] = json!({"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}});
+    binding["messages"] = json!([{"role": "user", "content": "hi"}]);
+    let mut effort = common();
+    effort["messages"] = json!([
+        {"role": "system", "content": [], "output_config": {"effort": "low"}},
+        {"role": "user", "content": "hi"}
+    ]);
+    let mut scoped = common();
+    scoped["messages"] = json!([
+        {"role": "user", "content": "hi"},
+        {"role": "system", "clear_at": "next_user_message", "content": "one turn"}
+    ]);
+
+    for (body, field) in
+        [(updates, "display"), (binding, "block_binding"), (effort, "output_config"), (scoped, "clear_at")]
+    {
+        let (code, response) = msg(MESSAGES_PATH, &body, &key);
+        if fable5_unavailable(code, &response) {
+            return;
+        }
+        let message = assert_400(code, &response);
+        assert!(message.contains(field), "unexpected message for {field}: {message}");
+    }
+}
+
+#[test]
+fn live_400_opus_5_thinking_off_rejects_per_message_xhigh() {
+    let key = key_or_skip!();
+    let body = json!({
+        "model": "claude-opus-5", "max_tokens": 1,
+        "thinking": {"type": "disabled"},
+        "output_config": {"effort": "high"},
+        "messages": [
+            {"role": "system", "content": [], "output_config": {"effort": "xhigh"}},
+            {"role": "user", "content": "hi"}
+        ]
+    });
+    let (code, response) =
+        post_with_beta(MESSAGES_PATH, &body, &key, Some(BetaFeature::MidConversationOutputConfig.as_str()));
+    let message = assert_400(code, &response);
+    assert!(message.contains("not supported when thinking is disabled"), "{message}");
 }
 
 #[test]

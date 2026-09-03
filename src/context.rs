@@ -25,9 +25,10 @@
 //! accepts.
 //!
 //! [`Message`] goes one step further: the role is not a field at all. The three
-//! roles do not admit the same content — a system message takes text and tool
-//! changes only — so the role is the *variant*, and [`Message::role`] derives the
-//! wire value from it. A role beside a free content list cannot be written:
+//! roles do not admit the same content — a system message is one of the three
+//! exact shapes in [`SystemMessage`] — so the role is the *variant*, and
+//! [`Message::role`] derives the wire value from it. A role beside a free content
+//! list cannot be written:
 //!
 //! ```compile_fail
 //! use anthropic::context::{ContentBlock, Message};
@@ -38,10 +39,10 @@
 //!
 //! ```compile_fail
 //! use anthropic::context::{ContentBlock, Message};
+//! use anthropic::system::SystemMessage;
 //!
-//! // Nor can a system message hold an ordinary content block: its variant takes
-//! // `SystemBlock`s, which have no image or tool-result form.
-//! let _ = Message::System(vec![ContentBlock::text("no")]);
+//! // Nor can persistent system content hold an ordinary content block.
+//! let _ = Message::System(SystemMessage::Persistent(vec![ContentBlock::text("no")]));
 //! ```
 //!
 //! The placement rules are therefore checked in one place each, and the check
@@ -51,11 +52,14 @@
 //!
 //! ```compile_fail
 //! use anthropic::context::{Context, Opening};
+//! use anthropic::system::SystemMessage;
 //!
 //! // The field is private, so a leading system message cannot be installed
 //! // behind `push_system`'s back.
 //! let mut ctx = Context::new(Opening::None);
-//! ctx.messages.push(anthropic::context::Message::System(Vec::new()));
+//! ctx.messages.push(anthropic::context::Message::System(
+//!     SystemMessage::Persistent(Vec::new()),
+//! ));
 //! ```
 //!
 //! The opening is the same story one level up. It is an argument to
@@ -79,8 +83,8 @@
 //! ```
 
 use crate::block::{ContentBlock, TextBlock, ToolResultContent};
-use crate::system::SystemBlock;
-use crate::{CacheControlType, CacheTtl, Role};
+use crate::system::{PerMessageEffort, SystemBlock, SystemClearAt, SystemMessage};
+use crate::{BetaFeature, CacheControlType, CacheTtl, Role};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -148,12 +152,10 @@ struct SlotState {
 /// One entry of the conversation.
 ///
 /// An enum rather than a `role` field beside a `content` field, because the three
-/// roles do not admit the same content: a system message takes text and tool
-/// changes only, and the API answers `role 'system' supports text,
-/// tool_addition, and tool_removal blocks only` for anything else. A struct with
-/// both fields public would let that rejection be written; here the variant
-/// carries exactly the blocks its role admits, and [`Self::role`] derives the wire
-/// value.
+/// roles do not admit the same content: a system message is persistent content,
+/// an effort-only change, or turn-scoped text. A struct with both fields public
+/// would let rejected combinations be written; here the variant carries exactly
+/// the shape its role admits, and [`Self::role`] derives the wire value.
 ///
 /// The blocks themselves stay public, because any sequence of them is a legal
 /// `content` array and pattern matching over replayed history is worth keeping.
@@ -172,21 +174,40 @@ pub enum Message {
         /// The turn's content blocks.
         Vec<ContentBlock>,
     ),
-    /// An instruction added partway through, after the cached prefix. See
-    /// [`crate::system`].
+    /// An instruction, effort change, or turn-scoped reminder added partway
+    /// through the conversation. See [`crate::system`].
     System(
-        /// The instruction's blocks. Never empty: the API answers `system content
-        /// must contain at least one block`, and [`Context::push_system`] refuses
-        /// an empty one before it commits.
-        Vec<SystemBlock>,
+        /// The exact system-message shape. The variants keep turn-scoped text,
+        /// effort-only configuration, and persistent content disjoint.
+        SystemMessage,
     ),
 }
 
-/// The wire shape both content kinds share: a role beside its blocks.
+/// The wire shape user, assistant, and persistent system content share: a role
+/// beside its blocks.
 #[derive(Serialize)]
 struct MessageWire<'a, B> {
     role: Role,
-    content: &'a Vec<B>,
+    content: &'a [B],
+}
+
+#[derive(Serialize)]
+struct PerMessageOutputConfig {
+    effort: PerMessageEffort,
+}
+
+#[derive(Serialize)]
+struct EffortSystemMessageWire {
+    role: Role,
+    content: [(); 0],
+    output_config: PerMessageOutputConfig,
+}
+
+#[derive(Serialize)]
+struct TurnScopedSystemMessageWire<'a> {
+    role: Role,
+    clear_at: SystemClearAt,
+    content: &'a [TextBlock],
 }
 
 impl Serialize for Message {
@@ -197,7 +218,19 @@ impl Serialize for Message {
             Message::User(content) | Message::Assistant(content) => {
                 MessageWire { role: self.role(), content }.serialize(s)
             }
-            Message::System(content) => MessageWire { role: self.role(), content }.serialize(s),
+            Message::System(SystemMessage::Persistent(content)) => {
+                MessageWire { role: self.role(), content }.serialize(s)
+            }
+            Message::System(SystemMessage::Effort(effort)) => EffortSystemMessageWire {
+                role: self.role(),
+                content: [],
+                output_config: PerMessageOutputConfig { effort: *effort },
+            }
+            .serialize(s),
+            Message::System(SystemMessage::TurnScoped(content)) => {
+                TurnScopedSystemMessageWire { role: self.role(), clear_at: SystemClearAt::NextUserMessage, content }
+                    .serialize(s)
+            }
         }
     }
 }
@@ -213,8 +246,8 @@ impl Message {
     }
 
     /// The entry's blocks, for the two roles that carry [`ContentBlock`]s.
-    /// `None` on a system message, whose blocks are [`SystemBlock`]s — a
-    /// different set, which is the whole reason this type is an enum.
+    /// `None` on every system shape, whose own disjoint content is available
+    /// through [`Self::system_message`].
     pub fn content(&self) -> Option<&[ContentBlock]> {
         match self {
             Message::User(content) | Message::Assistant(content) => Some(content),
@@ -222,10 +255,18 @@ impl Message {
         }
     }
 
-    /// A system message's blocks. `None` on the other two roles.
+    /// A persistent system message's blocks. `None` on every other shape.
     pub fn system_content(&self) -> Option<&[SystemBlock]> {
         match self {
-            Message::System(content) => Some(content),
+            Message::System(content) => content.persistent_content(),
+            Message::User(_) | Message::Assistant(_) => None,
+        }
+    }
+
+    /// The exact system-message shape, or `None` for user and assistant turns.
+    pub fn system_message(&self) -> Option<&SystemMessage> {
+        match self {
+            Message::System(message) => Some(message),
             Message::User(_) | Message::Assistant(_) => None,
         }
     }
@@ -235,15 +276,19 @@ impl Message {
             Message::User(content) | Message::Assistant(content) => {
                 content.get_mut(block).map(ContentBlock::cache_control_mut)
             }
-            Message::System(content) => content.get_mut(block).map(SystemBlock::cache_control_mut),
+            Message::System(content) => content.cache_control_at(block),
         }
     }
 
     fn block_count(&self) -> usize {
         match self {
             Message::User(content) | Message::Assistant(content) => content.len(),
-            Message::System(content) => content.len(),
+            Message::System(content) => content.block_count(),
         }
+    }
+
+    fn carries_system_content(&self) -> bool {
+        matches!(self, Message::System(message) if message.carries_content())
     }
 }
 
@@ -443,6 +488,9 @@ pub enum RollCacheError {
     SlotOccupiedByAnchor(CacheSlot),
     /// Context has no message content to attach a rolling breakpoint to.
     NoBlocksToCache,
+    /// The last message is turn-scoped. Its text deliberately never enters a
+    /// cache key, so the breakpoint belongs on the preceding user turn instead.
+    TurnScopedMessageNotCacheable,
     /// Another slot already points at this position with a different TTL.
     /// Committing would overwrite the other slot's `cache_control` and desync
     /// slot bookkeeping from the content. The API never sees this case (a
@@ -459,6 +507,9 @@ impl std::fmt::Display for RollCacheError {
                 write!(f, "cache slot {s:?} is occupied by a system/tools anchor")
             }
             RollCacheError::NoBlocksToCache => write!(f, "no content blocks to attach a cache breakpoint to"),
+            RollCacheError::TurnScopedMessageNotCacheable => {
+                write!(f, "a turn-scoped system message cannot carry a cache breakpoint")
+            }
             RollCacheError::ConflictingTtlAtSamePosition => {
                 write!(
                     f,
@@ -504,8 +555,8 @@ impl std::error::Error for AnchorError {}
 /// [`crate::request::RequestError::SystemMessageNotFollowedByAssistant`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SystemMessageError {
-    /// No blocks. The API answers `system content must contain at least one
-    /// block`; a system message says something or it is not one.
+    /// No blocks in a persistent or turn-scoped message. An effort-only message
+    /// has empty content by its distinct type and does not use this error.
     Empty,
     /// It would be the first entry, with no user turn for it to follow. A
     /// conversation that opens with an instruction has a system *prompt*, which is
@@ -655,21 +706,58 @@ impl Context {
         if blocks.is_empty() {
             return Err(SystemMessageError::Empty);
         }
-        match self.messages.last() {
+        self.push_content_system(SystemMessage::persistent(blocks))
+    }
+
+    /// Appends a mid-conversation system message of one persistent instruction.
+    pub fn push_system_text(&mut self, text: impl Into<String>) -> Result<(), SystemMessageError> {
+        self.push_system(vec![SystemBlock::text(text)])
+    }
+
+    /// Changes effort from the next user turn onward without rewriting the
+    /// request's cached prefix.
+    ///
+    /// Effort-only messages carry empty content and are accepted anywhere in
+    /// `messages`. Model support is checked by [`crate::request::Request::new`],
+    /// where both the conversation and selected model are known.
+    pub fn push_effort(&mut self, effort: PerMessageEffort) {
+        self.messages.push(Message::System(SystemMessage::effort(effort)));
+    }
+
+    /// Appends text that clears after the next user message while remaining in
+    /// the immutable transcript.
+    ///
+    /// The same placement rules as persistent content apply. The distinct block
+    /// type makes tool changes and cache breakpoints impossible here.
+    pub fn push_turn_scoped(&mut self, blocks: Vec<TextBlock>) -> Result<(), SystemMessageError> {
+        if blocks.is_empty() {
+            return Err(SystemMessageError::Empty);
+        }
+        self.push_content_system(SystemMessage::turn_scoped(blocks))
+    }
+
+    /// Appends one turn-scoped text reminder.
+    pub fn push_turn_scoped_text(&mut self, text: impl Into<String>) -> Result<(), SystemMessageError> {
+        self.push_turn_scoped(vec![TextBlock::new(text)])
+    }
+
+    fn push_content_system(&mut self, message: SystemMessage) -> Result<(), SystemMessageError> {
+        let before_run = self
+            .messages
+            .iter()
+            .rposition(|message| !matches!(message, Message::System(_)))
+            .map(|at| &self.messages[at]);
+        match before_run {
             None => return Err(SystemMessageError::First),
             // An assistant turn ending in a server tool use is also legal, but
             // this crate cannot yet build a server-tool block, so no assistant
             // tail it can produce satisfies the rule.
             Some(Message::Assistant(_)) => return Err(SystemMessageError::AfterAssistant),
-            Some(Message::User(_) | Message::System(_)) => {}
+            Some(Message::User(_)) => {}
+            Some(Message::System(_)) => unreachable!("rposition skipped system messages"),
         }
-        self.messages.push(Message::System(blocks));
+        self.messages.push(Message::System(message));
         Ok(())
-    }
-
-    /// Appends a mid-conversation system message of one instruction.
-    pub fn push_system_text(&mut self, text: impl Into<String>) -> Result<(), SystemMessageError> {
-        self.push_system(vec![SystemBlock::text(text)])
     }
 
     // ── Cache slot ops ──────────────────────────────────────────────────────
@@ -759,27 +847,71 @@ impl Context {
     /// A chain is therefore reported at its *last* message, which is the one whose
     /// successor is wrong. That is the position a caller has to change.
     pub(crate) fn misplaced_system_message(&self) -> Option<usize> {
-        self.messages.iter().enumerate().find_map(|(at, message)| {
-            let misplaced = matches!(message, Message::System(_))
-                && !matches!(self.messages.get(at + 1), None | Some(Message::Assistant(_) | Message::System(_)));
-            misplaced.then_some(at)
-        })
+        let mut start = 0;
+        while start < self.messages.len() {
+            if !matches!(self.messages[start], Message::System(_)) {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while end < self.messages.len() && matches!(self.messages[end], Message::System(_)) {
+                end += 1;
+            }
+            let carries_content = self.messages[start..end].iter().any(Message::carries_system_content);
+            let valid_predecessor = start > 0 && matches!(self.messages[start - 1], Message::User(_));
+            let valid_successor = matches!(self.messages.get(end), None | Some(Message::Assistant(_)));
+            if carries_content && (!valid_predecessor || !valid_successor) {
+                return Some(end - 1);
+            }
+            start = end;
+        }
+        None
     }
 
-    /// Where the first mid-conversation system message sits, if any.
+    /// Where the first content-bearing system message sits, if any.
     ///
-    /// Read by [`crate::request::Request::new`] to refuse the conversation on a
-    /// model that does not accept one — see
-    /// [`crate::model::ModelId::accepts_mid_conversation_system_message`]. The
-    /// index is what a caller needs: it names the entry to remove.
-    pub(crate) fn first_system_message(&self) -> Option<usize> {
-        self.messages.iter().position(|message| matches!(message, Message::System(_)))
+    /// Effort-only messages are excluded: unlike persistent and turn-scoped
+    /// instructions, their model support and placement rules are separate.
+    pub(crate) fn first_content_system_message(&self) -> Option<usize> {
+        self.messages.iter().position(Message::carries_system_content)
+    }
+
+    /// Where the first per-message effort change sits, if any.
+    pub(crate) fn first_effort_message(&self) -> Option<usize> {
+        self.messages.iter().position(|message| matches!(message, Message::System(SystemMessage::Effort(_))))
+    }
+
+    /// The first effort above `high` that reaches a user turn.
+    ///
+    /// A later effort message before that user replaces the pending level, so an
+    /// `xhigh` immediately overwritten by `low` never applies and is accepted.
+    pub(crate) fn first_effort_above_high_applied_to_user(&self) -> Option<(usize, PerMessageEffort)> {
+        let mut effective = None;
+        for (at, message) in self.messages.iter().enumerate() {
+            match message {
+                Message::System(SystemMessage::Effort(effort)) => effective = Some((at, *effort)),
+                Message::User(_) => {
+                    if let Some((at, effort @ (PerMessageEffort::Xhigh | PerMessageEffort::Max))) = effective {
+                        return Some((at, effort));
+                    }
+                }
+                Message::Assistant(_) | Message::System(_) => {}
+            }
+        }
+        None
+    }
+
+    pub(crate) fn requires_beta(&self, feature: BetaFeature) -> bool {
+        self.messages.iter().any(|message| matches!(message, Message::System(system) if system.requires(feature)))
     }
 
     // ── Internals ───────────────────────────────────────────────────────────
 
     fn tail_position(&self) -> Result<(usize, usize), RollCacheError> {
         let m = self.messages.len().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
+        if matches!(self.messages[m], Message::System(SystemMessage::TurnScoped(_))) {
+            return Err(RollCacheError::TurnScopedMessageNotCacheable);
+        }
         let b = self.messages[m].block_count().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
         Ok((m, b))
     }

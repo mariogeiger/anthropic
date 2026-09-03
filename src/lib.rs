@@ -27,6 +27,7 @@
 //! * [`content`] — the content blocks a message is made of, and their deltas.
 //! * [`stream`] — one streamed frame becomes one typed event.
 //! * [`settle`] — a stream becomes a finished message, or does not.
+//! * [`input_transformation`] — replayed input the API dropped before inference.
 //! * [`response`] — a non-streamed response body.
 //! * [`usage`] — what a request cost, and what the cache did.
 //!
@@ -82,6 +83,7 @@ pub mod content;
 pub mod context;
 pub mod document;
 pub mod frame;
+pub mod input_transformation;
 pub mod model;
 pub mod request;
 pub mod response;

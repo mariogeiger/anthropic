@@ -6,6 +6,10 @@
 //! field spellings, the fields the documentation does not mention, and the empty
 //! thinking block that `display: "omitted"` produces are all as they arrived. All
 //! but `citations.sse` were saved on 2026-08-29; that one on 2026-08-30.
+//! `fable-5-1-binding.sse` and `fable-5-1-thinking-dropped.json` are first-party
+//! Fable 5.1 responses captured on 2026-09-03. The first reports a clean check;
+//! the second reports a signed thinking block dropped after its system prefix
+//! changed.
 //!
 //! Two files were trimmed, and only by dropping repetition: long runs of
 //! `thinking_delta` and `text_delta` frames were cut to the first few per block,
@@ -41,7 +45,26 @@ const THINKING_OMITTED: &str = include_str!("captured/thinking-omitted.sse");
 const CACHE_WRITE: &str = include_str!("captured/cache-write.sse");
 const CACHE_READ: &str = include_str!("captured/cache-read.sse");
 const CITATIONS: &str = include_str!("captured/citations.sse");
+const FABLE_BINDING: &str = include_str!("captured/fable-5-1-binding.sse");
+const FABLE_DROPPED: &str = include_str!("captured/fable-5-1-thinking-dropped.json");
 const RESPONSE: &str = include_str!("captured/response.json");
+
+#[test]
+fn a_first_party_binding_stream_reports_that_no_input_was_dropped() {
+    let settled = accumulate(FABLE_BINDING).settle().unwrap();
+    assert_eq!(settled.model, "claude-fable-5-1");
+    assert_eq!(settled.stop_reason(), Some(StopReason::MaxTokens));
+    assert_eq!(settled.input_transformations, Some(Vec::new()));
+}
+
+#[test]
+fn a_first_party_response_reports_the_exact_thinking_block_it_dropped() {
+    let response = Response::decode(FABLE_DROPPED).unwrap();
+    let transformations = response.input_transformations.unwrap();
+    assert_eq!(transformations.len(), 1);
+    assert_eq!(transformations[0].path(), Some("messages.1.content.0"));
+    assert_eq!(transformations[0].reason(), Some(anthropic::ThinkingDropReason::PrefixBindingMismatch));
+}
 
 /// A cited answer, settled from the real stream: a plain-text document with
 /// citations enabled, and the model grounding two of its three text blocks.
@@ -214,7 +237,7 @@ fn a_captured_response_body_decodes() {
 /// against every prefix of real traffic rather than one hand-made case.
 #[test]
 fn no_prefix_of_a_captured_stream_settles_before_its_terminal_frame() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
         let payloads: Vec<&str> = body.lines().filter_map(data_payload).collect();
         for cut in 0..payloads.len() {
             let mut settling = Settling::new();
@@ -306,7 +329,7 @@ fn unknown_events_interleaved_through_a_captured_stream_change_nothing() {
 /// `Unmodeled` event: the modeled set covers real traffic completely.
 #[test]
 fn every_captured_frame_decodes_into_a_modeled_event() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
         for payload in body.lines().filter_map(data_payload) {
             let event = StreamEvent::decode(payload).expect(payload);
             assert!(
@@ -323,7 +346,7 @@ fn every_captured_frame_decodes_into_a_modeled_event() {
 /// checking once rather than trusting.
 #[test]
 fn the_sse_event_names_agree_with_the_payload_types() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS] {
+    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
         let mut named: Option<&str> = None;
         for line in body.lines() {
             if let Some(name) = line.strip_prefix("event: ") {

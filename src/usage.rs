@@ -89,7 +89,8 @@ pub struct Usage {
     /// Tokens generated, thinking included.
     pub output_tokens: u64,
     /// Input tokens served from a cache entry an earlier request wrote, billed
-    /// at 0.1× the base input rate.
+    /// at the selected model's cache-read rate. Fable 5.1 is $0.25/MTok rather
+    /// than the usual 10% of base input; see [`crate::model::Pricing`].
     ///
     /// Zero here *and* in [`Self::cache_creation_input_tokens`] means nothing
     /// was cached at all. The likeliest cause is a cached prefix shorter than

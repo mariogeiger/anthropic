@@ -19,8 +19,9 @@
 //! mentioned it or the message cache key moves.
 
 use crate::context::{Context, Message, SystemPrompt, Tool};
+use crate::system::PerMessageEffort;
 use crate::tool_choice::ToolChoice;
-use crate::values::{OutputFormatType, ServiceTier, ThinkingDisplay, ThinkingType};
+use crate::values::{BetaFeature, OutputFormatType, ServiceTier, ThinkingType};
 use serde::Serialize;
 
 // The model types were part of this module before they outgrew it. Named
@@ -28,10 +29,10 @@ use serde::Serialize;
 // meaning what it always did without shadowing this module's own wire structs.
 // The canonical home is [`crate::model`].
 pub use crate::model::{
-    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Month, Opus4_8,
-    Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6,
-    Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError,
-    YearMonth,
+    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Haiku4_5, Haiku4_5Thinking, Model, ModelId,
+    Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing,
+    Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5Effort, Sonnet5Thinking, Temperature,
+    TemperatureError, YearMonth,
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -140,6 +141,13 @@ pub enum RequestError {
         /// The output budget it had to stay below.
         max_tokens: u32,
     },
+    /// Preserved-thinking binding controls were requested while this model's
+    /// thinking is off, so there is no adaptive or enabled thinking object to
+    /// carry `block_binding`.
+    ThinkingBindingWithoutThinking {
+        /// The model whose current configuration has thinking off.
+        model: ModelId,
+    },
     /// `max_tokens` must fall within `1..=ModelId::max_output_tokens()`. The API
     /// rejects 0 and any value above the model's synchronous max output with a 400.
     MaxTokensOutOfRange {
@@ -178,10 +186,28 @@ pub enum RequestError {
         /// How many tools were declared, all of them deferred.
         tools: usize,
     },
+    /// The conversation changes effort inside `messages`, but the selected model
+    /// accepts only top-level effort. Fable 5.1 and Opus 5 are the modeled
+    /// per-message-effort models.
+    PerMessageEffortUnsupported {
+        /// The model that cannot apply the change.
+        model: ModelId,
+        /// Index of the effort-only system message.
+        at: usize,
+    },
+    /// Opus 5 has thinking disabled, but a later effort-only message raises the
+    /// level above `high`. The API accepts `xhigh` and `max` only with thinking
+    /// enabled.
+    PerMessageEffortUnsupportedWithThinkingOff {
+        /// Index of the effort-only message.
+        at: usize,
+        /// The rejected level.
+        effort: PerMessageEffort,
+    },
     /// The conversation holds a mid-conversation system message and this model
     /// does not accept one. The documentation states the feature is available on
-    /// Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude
-    /// Sonnet 5; use the top-level `system` field instead".
+    /// Fable 5.1, Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on
+    /// Claude Sonnet 5; use the top-level `system` field instead".
     ///
     /// # Why this is refused here and not made unrepresentable
     ///
@@ -224,6 +250,9 @@ impl std::fmt::Display for RequestError {
             RequestError::ThinkingBudgetExceedsMaxTokens { budget_tokens, max_tokens } => {
                 write!(f, "thinking budget_tokens ({budget_tokens}) must be less than max_tokens ({max_tokens})")
             }
+            RequestError::ThinkingBindingWithoutThinking { model } => {
+                write!(f, "{} cannot carry thinking block_binding while thinking is off", model.api_id())
+            }
             RequestError::MaxTokensOutOfRange { max_tokens, max_output } => {
                 write!(f, "max_tokens ({max_tokens}) must be in 1..={max_output} for this model")
             }
@@ -236,6 +265,16 @@ impl std::fmt::Display for RequestError {
             RequestError::EveryToolDeferred { tools } => {
                 write!(f, "all {tools} declared tools are deferred; at least one must not be")
             }
+            RequestError::PerMessageEffortUnsupported { model, at } => write!(
+                f,
+                "{} does not accept per-message effort; remove the effort change at index {at}",
+                model.api_id()
+            ),
+            RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort } => write!(
+                f,
+                "per-message effort {} at index {at} is unsupported while Opus 5 thinking is off",
+                effort.as_str()
+            ),
             RequestError::MidConversationSystemMessageUnsupported { model, at } => write!(
                 f,
                 "{} does not accept a mid-conversation system message; \
@@ -267,6 +306,7 @@ pub struct Request<'a> {
     service_tier: ServiceTier,
     end_user_id: Option<EndUserId>,
     output_format: Option<OutputFormat>,
+    prefix_mismatch_behavior: Option<crate::PrefixMismatchBehavior>,
 }
 
 impl<'a> Request<'a> {
@@ -290,9 +330,19 @@ impl<'a> Request<'a> {
         // Availability is per model, and the model is only known here — see
         // `RequestError::MidConversationSystemMessageUnsupported`.
         if !model.id().accepts_mid_conversation_system_message()
-            && let Some(at) = context.first_system_message()
+            && let Some(at) = context.first_content_system_message()
         {
             return Err(RequestError::MidConversationSystemMessageUnsupported { model: model.id(), at });
+        }
+        if !model.id().accepts_per_message_effort()
+            && let Some(at) = context.first_effort_message()
+        {
+            return Err(RequestError::PerMessageEffortUnsupported { model: model.id(), at });
+        }
+        if matches!(&model, Model::Opus5(Opus5 { thinking: Opus5Thinking::Disabled { .. } }))
+            && let Some((at, effort)) = context.first_effort_above_high_applied_to_user()
+        {
+            return Err(RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort });
         }
         let tools = context.tools();
         if !tools.is_empty() && tools.iter().all(|tool| tool.defer_loading) {
@@ -314,6 +364,7 @@ impl<'a> Request<'a> {
             service_tier: ServiceTier::Auto,
             end_user_id: None,
             output_format: None,
+            prefix_mismatch_behavior: None,
         })
     }
 
@@ -430,6 +481,68 @@ impl<'a> Request<'a> {
     pub fn output_format(&self) -> Option<&OutputFormat> {
         self.output_format.as_ref()
     }
+    /// Chooses whether a mismatched preserved-thinking prefix rejects the
+    /// request or drops the affected chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RequestError::ThinkingBindingWithoutThinking`] when the selected
+    /// model configuration has thinking off, because `block_binding` is a member
+    /// of an adaptive or enabled thinking object rather than a top-level field.
+    pub fn with_prefix_mismatch_behavior(
+        mut self,
+        behavior: crate::PrefixMismatchBehavior,
+    ) -> Result<Self, RequestError> {
+        if !self.thinking_is_enabled() {
+            return Err(RequestError::ThinkingBindingWithoutThinking { model: self.model.id() });
+        }
+        self.prefix_mismatch_behavior = Some(behavior);
+        Ok(self)
+    }
+
+    /// The explicit preserved-thinking mismatch policy, where one was set.
+    pub fn prefix_mismatch_behavior(&self) -> Option<crate::PrefixMismatchBehavior> {
+        self.prefix_mismatch_behavior
+    }
+
+    /// The beta header values required by the features present in this body.
+    ///
+    /// Derived from the typed request rather than supplied separately, so adding
+    /// or removing a beta field cannot leave the `anthropic-beta` header stale.
+    /// This is the required minimum; a caller may additionally opt into
+    /// [`BetaFeature::ThinkingBindingControls`] without setting a mismatch policy
+    /// when it only wants transformation reports. Each value should be sent
+    /// exactly as [`BetaFeature::as_str`] returns it.
+    pub fn required_beta_features(&self) -> impl Iterator<Item = BetaFeature> + '_ {
+        BetaFeature::ALL.into_iter().filter(|feature| self.requires_beta(*feature))
+    }
+
+    fn thinking_is_enabled(&self) -> bool {
+        match &self.model {
+            Model::Fable5_1(_) | Model::Fable5(_) => true,
+            Model::Opus5(model) => matches!(model.thinking, Opus5Thinking::Adaptive { .. }),
+            Model::Opus4_8(model) => matches!(model.thinking, Opus4_8Thinking::Adaptive { .. }),
+            Model::Sonnet5(model) => matches!(model.thinking, Sonnet5Thinking::Adaptive { .. }),
+            Model::Sonnet4_6(model) => matches!(model.sampling, Sonnet4_6Sampling::Adaptive { .. }),
+            Model::Haiku4_5(model) => matches!(model.thinking, Haiku4_5Thinking::Enabled { .. }),
+        }
+    }
+
+    fn requires_beta(&self, feature: BetaFeature) -> bool {
+        if self.context.requires_beta(feature) {
+            return true;
+        }
+        match (&self.model, feature) {
+            (Model::Fable5_1(model), BetaFeature::ThinkingDisplayUpdates) => {
+                model.display == FableThinkingDisplay::Updates
+            }
+            (Model::Fable5(model), BetaFeature::ThinkingDisplayUpdates) => {
+                model.display == FableThinkingDisplay::Updates
+            }
+            (_, BetaFeature::ThinkingBindingControls) => self.prefix_mismatch_behavior.is_some(),
+            _ => false,
+        }
+    }
 }
 
 // ── CountRequest ─────────────────────────────────────────────────────────────
@@ -462,6 +575,13 @@ impl<'a> CountRequest<'a> {
     pub fn model(&self) -> ModelId {
         self.model
     }
+    /// Beta header values required by beta messages already in the conversation.
+    ///
+    /// Token counting sees the same `messages` array as generation, so a
+    /// turn-scoped reminder, effort change, or tool change needs the same header.
+    pub fn required_beta_features(&self) -> impl Iterator<Item = BetaFeature> + '_ {
+        BetaFeature::ALL.into_iter().filter(|feature| self.context.requires_beta(*feature))
+    }
 }
 
 // ── Serialization ────────────────────────────────────────────────────────────
@@ -469,11 +589,20 @@ impl<'a> CountRequest<'a> {
 // never "omit if equal to default".
 
 #[derive(Serialize)]
+struct BlockBinding {
+    prefix_mismatch_behavior: crate::PrefixMismatchBehavior,
+}
+
+#[derive(Serialize)]
 struct AdaptiveThinking {
     #[serde(rename = "type")]
     kind: ThinkingType,
+    // Fable 5.1 has one extra beta value, so the public model types hold two
+    // different closed enums and this private wire shape receives their strings.
     #[serde(skip_serializing_if = "Option::is_none")]
-    display: Option<ThinkingDisplay>,
+    display: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_binding: Option<BlockBinding>,
 }
 
 #[derive(Serialize)]
@@ -481,6 +610,8 @@ struct EnabledThinking {
     #[serde(rename = "type")]
     kind: ThinkingType,
     budget_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_binding: Option<BlockBinding>,
 }
 
 #[derive(Serialize)]
@@ -552,21 +683,34 @@ struct RequestWire<'a> {
 
 impl Serialize for Request<'_> {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let adaptive = |display| ThinkingWire::Adaptive(AdaptiveThinking { kind: ThinkingType::Adaptive, display });
-        let enabled =
-            |budget_tokens| ThinkingWire::Enabled(EnabledThinking { kind: ThinkingType::Enabled, budget_tokens });
+        let block_binding =
+            || self.prefix_mismatch_behavior.map(|prefix_mismatch_behavior| BlockBinding { prefix_mismatch_behavior });
+        let adaptive = |display: Option<&'static str>| {
+            ThinkingWire::Adaptive(AdaptiveThinking {
+                kind: ThinkingType::Adaptive,
+                display,
+                block_binding: block_binding(),
+            })
+        };
+        let enabled = |budget_tokens| {
+            ThinkingWire::Enabled(EnabledThinking {
+                kind: ThinkingType::Enabled,
+                budget_tokens,
+                block_binding: block_binding(),
+            })
+        };
         let effort = |e: &'static str| Some(e);
         let (temperature, thinking, output_config) = match &self.model {
             // Thinking is always on — always emit the adaptive block (the
             // request is a complete record of what the model sees).
-            Model::Fable5_1(p) => (None, Some(adaptive(Some(p.display))), effort(p.effort.as_str())),
-            Model::Fable5(p) => (None, Some(adaptive(Some(p.display))), effort(p.effort.as_str())),
+            Model::Fable5_1(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
+            Model::Fable5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
             // Adaptive thinking is always emitted explicitly; "off" is the explicit
             // disabled block, not an omitted field. No sampling: `temperature`
             // is rejected as deprecated on this model.
             Model::Opus5(p) => match &p.thinking {
                 Opus5Thinking::Adaptive { display, effort: e } => {
-                    (None, Some(adaptive(Some(*display))), effort(e.as_str()))
+                    (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
                 }
                 Opus5Thinking::Disabled { effort: e } => (
                     None,
@@ -578,7 +722,7 @@ impl Serialize for Request<'_> {
                 None,
                 match &p.thinking {
                     Opus4_8Thinking::Off => None,
-                    Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(*display))),
+                    Opus4_8Thinking::Adaptive { display } => Some(adaptive(Some(display.as_str()))),
                 },
                 effort(p.effort.as_str()),
             ),
@@ -587,7 +731,7 @@ impl Serialize for Request<'_> {
             Model::Sonnet5(p) => (
                 None,
                 Some(match &p.thinking {
-                    Sonnet5Thinking::Adaptive { display } => adaptive(Some(*display)),
+                    Sonnet5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
                     Sonnet5Thinking::Disabled => {
                         ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled })
                     }
@@ -597,7 +741,7 @@ impl Serialize for Request<'_> {
             Model::Sonnet4_6(p) => {
                 let (t, th) = match p.sampling {
                     Sonnet4_6Sampling::Temperature(t) => (Some(t.get()), None),
-                    Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display)))),
+                    Sonnet4_6Sampling::Adaptive { display } => (None, Some(adaptive(Some(display.as_str())))),
                 };
                 (t, th, effort(p.effort.as_str()))
             }

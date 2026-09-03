@@ -35,6 +35,7 @@ use std::collections::BTreeMap;
 
 use crate::content::{StreamedBlock, ToolInput};
 use crate::frame::FrameError;
+use crate::input_transformation::InputTransformation;
 use crate::stream::{MessageDelta, MessageStart, RefusalDetails, StreamEvent, StreamedError};
 use crate::usage::Usage;
 use crate::values::StopReason;
@@ -131,6 +132,7 @@ pub struct Settling {
     start: Option<MessageStart>,
     ending: Option<MessageDelta>,
     terminal: Option<Terminal>,
+    input_transformations: Option<Vec<InputTransformation>>,
     usage: Usage,
     events: usize,
 }
@@ -180,6 +182,7 @@ impl Settling {
             StreamEvent::MessageStart(start) => {
                 self.usage.merge_cumulative(&start.usage);
                 if self.start.is_none() {
+                    self.input_transformations = start.input_transformations.clone();
                     self.start = Some(start);
                 }
             }
@@ -201,6 +204,9 @@ impl Settling {
             StreamEvent::ContentBlockStop { .. } => {}
             StreamEvent::MessageDelta(delta) => {
                 self.usage.merge_cumulative(&delta.usage);
+                if delta.input_transformations.is_some() {
+                    self.input_transformations = delta.input_transformations.clone();
+                }
                 self.ending = Some(delta);
             }
             StreamEvent::MessageStop { usage } => {
@@ -288,6 +294,7 @@ impl Settling {
             id,
             model,
             blocks: self.blocks.into_values().collect(),
+            input_transformations: self.input_transformations,
             usage: self.usage,
             events: self.events,
         })
@@ -359,6 +366,9 @@ pub struct Settled {
     pub model: String,
     /// The content blocks, in the order of the final `content` array.
     pub blocks: Vec<StreamedBlock>,
+    /// Input blocks dropped before inference. A final fallback report replaces
+    /// the opening one; `None` means the binding-controls beta was absent.
+    pub input_transformations: Option<Vec<InputTransformation>>,
     /// What the message cost, merged across every frame that reported it.
     ///
     /// Never optional: a stream that reached `message_start` reported real
@@ -512,6 +522,25 @@ mod tests {
         assert_eq!(settled.usage.cache_creation.ephemeral_5m_input_tokens, 1_043);
         assert_eq!(settled.usage.output_tokens, 45);
         assert_eq!(settled.usage.total_input_tokens(), 1_079);
+    }
+
+    #[test]
+    fn a_final_fallback_report_replaces_the_opening_binding_report() {
+        let mut settling = Settling::new();
+        settling.consume_payload(
+            r#"{"type":"message_start","message":{"id":"msg","model":"claude-fable-5-1","input_transformations":[]}}"#,
+        )
+        .unwrap();
+        settling
+            .consume_payload(
+                r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"input_transformations":[{"type":"thinking_dropped","path":"messages.1.content.0","reason":"model_binding_mismatch"}]}"#,
+            )
+            .unwrap();
+        settling.consume_payload(r#"{"type":"message_stop"}"#).unwrap();
+        let settled = settling.settle().unwrap();
+        let transformations = settled.input_transformations.unwrap();
+        assert_eq!(transformations.len(), 1);
+        assert_eq!(transformations[0].path(), Some("messages.1.content.0"));
     }
 
     /// The point of the whole module: without `message_stop` there is no

@@ -1,5 +1,67 @@
 # Changelog
 
+## 0.9.0
+
+- Claude Fable 5.1 now models all documented beta controls. Per-message effort
+  is an effort-only system message; turn-scoped system text clears after the
+  next user message without leaving history; both Fable 5 models expose
+  `display: "updates"` for progress notes; and every adaptive or enabled thinking
+  configuration can set `thinking.block_binding.prefix_mismatch_behavior` to
+  `error` or `drop_block` through `Request`.
+- `Request::required_beta_features` and the matching `CountRequest` method infer
+  every required `anthropic-beta` value from the typed body. This includes the
+  previously missing header for mid-conversation tool additions and removals.
+- System-message placement is checked by maximal consecutive runs. Effort-only
+  runs are position-free, while any run containing persistent or turn-scoped
+  content must follow a user turn and end the array or precede an assistant
+  turn. A turn-scoped tail cannot take a cache breakpoint.
+- Buffered responses, `message_start`, final fallback `message_delta` events,
+  and settled streams now carry optional typed `input_transformations`.
+  `None` means the controls beta was absent; `Some([])` means it checked and
+  dropped nothing. Known thinking drops preserve their path, typed and raw
+  reason; unknown transformation kinds preserve their complete JSON.
+- `Pricing` now includes cache-read input price. Fable 5.1 records its special
+  $0.25/MTok rate; Fable 5 remains $1/MTok and the other modeled models retain
+  their documented 10%-of-input rates.
+- First-party probes confirmed all five beta headers: each typed form returned
+  200 with its inferred header and 400 without it. Verbatim Fable 5.1 responses
+  capture both `input_transformations: []` and a thinking block dropped after
+  its signed system prefix changed; explicit `error` rejected that edit with the
+  documented 400. Separate probes confirmed `updates` on Fable 5,
+  `block_binding` on Opus 4.8, and the documented rejection of per-message
+  `xhigh` while Opus 5 thinking is disabled.
+- `context.rs` is below 1,000 lines; its tests now have the separate bounded
+  mission `context/tests.rs`.
+
+### Breaking: system-message, display, pricing, and response types are exact
+
+`Message::System(Vec<SystemBlock>)` is now
+`Message::System(SystemMessage::Persistent(Vec<SystemBlock>))`.
+`Fable5::with_display` and `Fable5_1::with_display` now take
+`FableThinkingDisplay`, whose additional `Updates` variant cannot leak onto
+non-Fable models. `Pricing` adds
+`cache_read_input_cents_per_mtok`. `Response`, `MessageStart`, `MessageDelta`,
+and non-exhaustive `Settled` expose `input_transformations`; `RequestError` and
+`RollCacheError` each add the new refusal their expanded input domain needs.
+
+**Migration.** Calls through `Context::push_system` need no change. For direct
+construction and display configuration, apply these substitutions and add the
+cache-read field to any `Pricing` literal:
+
+```text
+Message::System(blocks)
+→ Message::System(SystemMessage::Persistent(blocks))
+
+.with_display(ThinkingDisplay::Summarized)
+→ .with_display(FableThinkingDisplay::Summarized)
+```
+
+Exhaustive matches over the expanded public enums and structs must handle their
+new cases. Use `required_beta_features().map(BetaFeature::as_str)` to build the
+header instead of maintaining a parallel beta list.
+
+  `anthropic` is now 0.9.0.
+
 ## 0.8.0
 
 - Claude Fable 5.1 is now a first-class model: `Model::fable_5_1`,

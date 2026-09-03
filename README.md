@@ -13,6 +13,8 @@ Currently modeled: `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claud
 - **A silent cache failure cannot hide.** A cached prefix below the model's minimum caches nothing and returns no error. `Usage::cache_hit_rate` is how you notice. Merging usage across frames is a pointwise maximum, so a later frame that reports fewer fields cannot zero the cache counts an earlier one gave you.
 - **A stop reason cannot be mistaken for the end of a stream.** `message_delta` carries `stop_reason` but is not terminal; only `message_stop` and `error` are. A stream cut off in between fails to settle and says the stop reason had already arrived.
 - **A parameter a model rejects does not exist on that model's type.** Fable 5.1 has no thinking-off or temperature method; Sonnet 4.6 has no `xhigh` effort; Opus 5 with thinking off has no `xhigh` or `max`; Haiku 4.5 has no effort at all. For the request-level relation, `Request::with_tool_choice` rejects forced calls on Fable 5.1 before serialization.
+- **A beta field cannot silently lose its header.** `Request::required_beta_features` derives the exact `anthropic-beta` values from system messages and thinking controls, including combinations of several betas. `CountRequest` does the same for its shared conversation.
+- **System-message shapes cannot bleed into each other.** Persistent messages carry text or tool changes, effort-only messages carry empty content and `output_config`, and turn-scoped messages carry text with `clear_at` but no cache breakpoint. Consecutive messages are validated as one run, matching the API.
 - **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. A month is one of twelve variants, not a `u8` documented as 1–12; a temperature is a newtype, not an `f32` documented as 0–1.
 - **A role cannot carry content that role refuses.** `Message` is an enum whose variant *is* the role, so a system message holds only the text and tool changes the API accepts there — not an image, and not a tool result. There is no `role` field to set independently of the content.
 - **A checked constructor cannot be bypassed.** `Request` and `CountRequest` hold private fields behind readers, so `max_tokens` cannot be reassigned past the range check `Request::new` runs against the model's maximum.
@@ -26,9 +28,12 @@ non-streamed response, the SSE stream, and the error body. On the way out: a typ
 per model, the four cache breakpoints, tools with their search and validation
 flags, `tool_choice`, stop sequences, `service_tier`, `metadata`, structured
 output, images, documents, search results, and mid-conversation system messages
-including tool additions and removals. On the way in: every documented event and
-delta kind, content blocks, citations, refusal details, and the full usage
-breakdown.
+including persistent tool additions/removals, per-message effort, and turn-scoped
+reminders. Both Fable models expose progress-update display, and every enabled
+thinking model exposes preserved-thinking binding controls, with each required
+beta header inferred from the body. On the
+way in: every documented event and delta kind, content blocks, citations, refusal
+details, input transformations, and the full usage breakdown.
 
 Not covered, deliberately: no HTTP client, and no endpoint but Messages — Batches,
 Files, Models, and Skills are separate APIs. Server-side tools (web search, web
@@ -39,7 +44,7 @@ declarable; their blocks decode as `Unmodeled` rather than failing.
 
 ```rust
 use anthropic::{
-    API_BASE, HEADER_API_KEY, HEADER_VERSION, MESSAGES_PATH, VERSION,
+    API_BASE, HEADER_API_KEY, HEADER_BETA, HEADER_VERSION, MESSAGES_PATH, VERSION,
     context::{Context, Opening},
     request::{Model, Request},
 };
@@ -47,15 +52,23 @@ use anthropic::{
 let mut ctx = Context::new(Opening::instruction("you are helpful"));
 ctx.push_user_text("hello");
 
-let body = serde_json::to_value(Request::new(&ctx, Model::opus_5(), 1024)?.streamed())?;
+let request = Request::new(&ctx, Model::opus_5(), 1024)?.streamed();
+let body = serde_json::to_value(&request)?;
+let betas = request
+    .required_beta_features()
+    .map(|feature| feature.as_str())
+    .collect::<Vec<_>>()
+    .join(",");
 
-reqwest::Client::new()
+let client = reqwest::Client::new();
+let mut call = client
     .post(format!("{API_BASE}{MESSAGES_PATH}"))
     .header(HEADER_API_KEY, std::env::var("ANTHROPIC_API_KEY")?)
-    .header(HEADER_VERSION, VERSION)
-    .json(&body)
-    .send()
-    .await?;
+    .header(HEADER_VERSION, VERSION);
+if !betas.is_empty() {
+    call = call.header(HEADER_BETA, betas);
+}
+call.json(&body).send().await?;
 ```
 
 ## Reading a stream

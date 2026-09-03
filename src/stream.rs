@@ -36,6 +36,7 @@ use serde_json::Value;
 
 use crate::content::{BlockDelta, StreamedBlock};
 use crate::frame::{FrameError, decode_usage, optional_string, require, require_str, require_u32};
+use crate::input_transformation::{InputTransformation, decode_input_transformations};
 use crate::usage::Usage;
 use crate::values::{ErrorType, RefusalCategory, StopReason};
 
@@ -44,7 +45,8 @@ use crate::values::{ErrorType, RefusalCategory, StopReason};
 /// The `message` object `message_start` carries.
 ///
 /// Its content array is always empty — the blocks arrive as their own events — so
-/// this is the message's identity and its opening usage, nothing more.
+/// this is the message's identity, its input transformations, and its opening
+/// usage, nothing more.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageStart {
     /// The message's identifier, worth logging for Anthropic support.
@@ -53,6 +55,9 @@ pub struct MessageStart {
     /// asked for: a gateway routing `aws/anthropic/bedrock-claude-opus-5` reports
     /// `claude-opus-5` here.
     pub model: String,
+    /// Input blocks dropped before inference. `Some([])` records that the beta
+    /// check ran and found none; `None` means the field was not requested.
+    pub input_transformations: Option<Vec<InputTransformation>>,
     /// The opening usage.
     ///
     /// Anthropic documents `message_start` as where the cache counts appear, and
@@ -113,6 +118,9 @@ pub struct MessageDelta {
     pub stop_sequence: Option<String>,
     /// Why the model refused, on [`StopReason::Refusal`]. `None` otherwise.
     pub refusal: Option<RefusalDetails>,
+    /// A final replacement transformation list, emitted when a server-side
+    /// fallback changes which thinking blocks the serving model can read.
+    pub input_transformations: Option<Vec<InputTransformation>>,
     /// Cumulative usage, per Anthropic's documentation. Merged into what
     /// `message_start` reported — see [`Usage::merge_cumulative`].
     pub usage: Usage,
@@ -271,6 +279,7 @@ impl StreamEvent {
                     stop_reason: field("stop_reason").and_then(StopReason::from_str),
                     stop_sequence: field("stop_sequence").map(str::to_owned),
                     refusal: RefusalDetails::decode(delta.and_then(|delta| delta.get("stop_details"))),
+                    input_transformations: decode_input_transformations(frame.get("input_transformations"))?,
                     usage: decode_usage(frame)?,
                 })
             }
@@ -288,6 +297,7 @@ fn decode_message_start(message: &Value) -> Result<MessageStart, FrameError> {
     Ok(MessageStart {
         id: require_str(message, "id")?.to_owned(),
         model: optional_string(message, "model"),
+        input_transformations: decode_input_transformations(message.get("input_transformations"))?,
         usage: decode_usage(message)?,
     })
 }
@@ -335,6 +345,30 @@ mod tests {
         let StreamEvent::MessageStart(start) = event else { panic!("expected message_start") };
         assert_eq!(start.usage.cache_read_input_tokens, 1_043);
         assert_eq!(start.usage.total_input_tokens(), 1_079);
+    }
+
+    #[test]
+    fn binding_reports_decode_at_both_streaming_locations() {
+        let start = StreamEvent::from_json(&json!({
+            "type": "message_start",
+            "message": {"id": "msg", "model": "claude-fable-5-1", "input_transformations": []}
+        }))
+        .unwrap();
+        let StreamEvent::MessageStart(start) = start else { panic!("expected message start") };
+        assert_eq!(start.input_transformations, Some(Vec::new()));
+
+        let delta = StreamEvent::from_json(&json!({
+            "type": "message_delta", "delta": {"stop_reason": "end_turn"},
+            "input_transformations": [{
+                "type": "thinking_dropped", "path": "messages.1.content.0",
+                "reason": "future_binding_mismatch"
+            }]
+        }))
+        .unwrap();
+        let StreamEvent::MessageDelta(delta) = delta else { panic!("expected message delta") };
+        let transformation = &delta.input_transformations.as_ref().unwrap()[0];
+        assert_eq!(transformation.reason(), None);
+        assert_eq!(transformation.raw_reason(), Some("future_binding_mismatch"));
     }
 
     /// A captured text block: opens empty, grows by `text_delta`, then stops.

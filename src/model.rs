@@ -103,13 +103,16 @@ pub enum ModelId {
 }
 
 /// Standard list price per million tokens (MTok), in US cents (e.g. 500 = $5.00).
-/// Introductory/promotional pricing, batch and cache-tier rates, and per-platform
-/// pricing are not represented — verify against the Anthropic pricing docs before
-/// relying on this for billing.
+///
+/// Cache reads are explicit because Fable 5.1's $0.25 rate is 2.5% of its base
+/// input price, while the other modeled models use the usual 10% rate. Batch,
+/// cache-write, promotional, and per-platform rates are not represented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pricing {
-    /// Price of a million input tokens, in US cents.
+    /// Price of a million uncached input tokens, in US cents.
     pub input_cents_per_mtok: u32,
+    /// Price of a million input tokens read from prompt cache, in US cents.
+    pub cache_read_input_cents_per_mtok: u32,
     /// Price of a million output tokens, in US cents.
     pub output_cents_per_mtok: u32,
 }
@@ -252,10 +255,10 @@ impl ModelId {
     /// Whether this model accepts a `{"role": "system"}` entry inside `messages`.
     ///
     /// A closed list, not a tier rule: the feature is documented as available on
-    /// Fable 5, Mythos 5, Opus 4.8 and Opus 5, and *not* on Sonnet 5, where the
-    /// documentation says to use the top-level `system` field instead. Every model
-    /// the list omits is therefore `false` here, so adding a model states its
-    /// answer rather than inheriting a guess.
+    /// Fable 5.1, Fable 5, Mythos 5.1, Mythos 5, Opus 4.8 and Opus 5, and
+    /// *not* on Sonnet 5, where the documentation says to use the top-level
+    /// `system` field instead. Every model the list omits is therefore `false`
+    /// here, so adding a model states its answer rather than inheriting a guess.
     ///
     /// Mid-conversation *tool* changes carry the same availability, and need no
     /// second predicate: a [`crate::system::SystemBlock::ToolAddition`] or
@@ -271,6 +274,14 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
             ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
         }
+    }
+
+    /// Whether this model accepts an effort-only system message.
+    ///
+    /// The beta is a closed model list: Fable 5.1, Mythos 5.1, and Opus 5.
+    /// Mythos is not modeled by this crate, so exactly two variants answer true.
+    pub fn accepts_per_message_effort(self) -> bool {
+        matches!(self, ModelId::Fable5_1 | ModelId::Opus5)
     }
 
     /// Whether this model accepts `tool_choice` values that force a call.
@@ -328,16 +339,19 @@ impl ModelId {
 
     /// Standard list price per MTok (see [`Pricing`] for caveats).
     pub fn price_per_mtok(self) -> Pricing {
-        let (input, output) = match self {
-            ModelId::Fable5_1 | ModelId::Fable5 => (1_000, 5_000),
-            ModelId::Opus5 => (500, 2_500),
-            ModelId::Opus4_8 => (500, 2_500),
+        let (input, cache_read_input, output) = match self {
+            ModelId::Fable5_1 => (1_000, 25, 5_000),
+            ModelId::Fable5 => (1_000, 100, 5_000),
+            ModelId::Opus5 | ModelId::Opus4_8 => (500, 50, 2_500),
             // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
-            ModelId::Sonnet5 => (300, 1_500),
-            ModelId::Sonnet4_6 => (300, 1_500),
-            ModelId::Haiku4_5 => (100, 500),
+            ModelId::Sonnet5 | ModelId::Sonnet4_6 => (300, 30, 1_500),
+            ModelId::Haiku4_5 => (100, 10, 500),
         };
-        Pricing { input_cents_per_mtok: input, output_cents_per_mtok: output }
+        Pricing {
+            input_cents_per_mtok: input,
+            cache_read_input_cents_per_mtok: cache_read_input,
+            output_cents_per_mtok: output,
+        }
     }
 }
 
@@ -454,49 +468,8 @@ impl From<Haiku4_5> for Model {
 
 // ── Fable 5.1 ────────────────────────────────────────────────────────────────
 
-/// Fable 5.1's per-call parameters.
-///
-/// Thinking is always adaptive: disabling it and the legacy fixed-budget form
-/// are both rejected. Unlike Fable 5, forced tool choice is also rejected; that
-/// request-level relation is enforced by [`crate::request::Request::with_tool_choice`].
-///
-/// ```compile_fail
-/// let _ = anthropic::request::Model::fable_5_1().with_thinking_off();
-/// ```
-pub struct Fable5_1 {
-    /// Whether the provider returns a reasoning summary. `Omitted` by default.
-    pub display: ThinkingDisplay,
-    /// How much work the model spends over the complete supported range.
-    pub effort: Fable5_1Effort,
-}
-
-impl Default for Fable5_1 {
-    fn default() -> Self {
-        Self { display: ThinkingDisplay::Omitted, effort: Fable5Effort::High }
-    }
-}
-
-impl Fable5_1 {
-    /// The documented defaults: adaptive thinking, hidden summaries, high effort.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Sets how much work the model spends.
-    pub fn with_effort(mut self, effort: Fable5_1Effort) -> Self {
-        self.effort = effort;
-        self
-    }
-
-    /// Chooses whether provider-safe reasoning summaries are returned.
-    pub fn with_display(mut self, display: ThinkingDisplay) -> Self {
-        self.display = display;
-        self
-    }
-}
-
-/// Fable 5.1 accepts the same five effort levels as Fable 5.
-pub type Fable5_1Effort = Fable5Effort;
+mod fable;
+pub use fable::{Fable5_1, Fable5_1Effort, FableThinkingDisplay};
 
 // ── Fable 5 ──────────────────────────────────────────────────────────────────
 // Frontier tier. No sampling (temperature/top_p/top_k rejected). Thinking is
@@ -512,14 +485,14 @@ pub type Fable5_1Effort = Fable5Effort;
 /// [`Fable5Effort`]; visibility is `display`.
 pub struct Fable5 {
     /// Whether reasoning text is sent back. `Omitted` by default.
-    pub display: ThinkingDisplay,
+    pub display: FableThinkingDisplay,
     /// How much thinking to spend.
     pub effort: Fable5Effort,
 }
 
 impl Default for Fable5 {
     fn default() -> Self {
-        Self { display: ThinkingDisplay::Omitted, effort: Fable5Effort::High }
+        Self { display: FableThinkingDisplay::Omitted, effort: Fable5Effort::High }
     }
 }
 
@@ -538,7 +511,7 @@ impl Fable5 {
     /// Set the thinking summary visibility. Thinking can't be turned off on
     /// Fable 5; pass `Summarized` for visible reasoning text, `Omitted` (default)
     /// for empty thinking blocks.
-    pub fn with_display(mut self, display: ThinkingDisplay) -> Self {
+    pub fn with_display(mut self, display: FableThinkingDisplay) -> Self {
         self.display = display;
         self
     }

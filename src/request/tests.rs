@@ -1,6 +1,8 @@
 use super::*;
 use crate::ThinkingDisplay;
 use crate::context::Opening;
+use crate::system::{PerMessageEffort, SystemBlock, ToolReference};
+use crate::{BetaFeature, PrefixMismatchBehavior};
 use serde_json::Value;
 
 fn req(m: impl Into<Model>) -> Value {
@@ -28,7 +30,10 @@ fn fable_5_1_default_and_constants() {
     assert_eq!(id.min_cacheable_prefix_tokens(), 512);
     assert_eq!(id.knowledge_cutoff(), YearMonth::new(2026, Month::June));
     assert_eq!(id.training_cutoff(), YearMonth::new(2026, Month::June));
-    assert_eq!(id.price_per_mtok(), Pricing { input_cents_per_mtok: 1_000, output_cents_per_mtok: 5_000 });
+    assert_eq!(
+        id.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 1_000, cache_read_input_cents_per_mtok: 25, output_cents_per_mtok: 5_000 }
+    );
     assert!(id.accepts_mid_conversation_system_message());
     assert!(!id.accepts_forced_tool_choice());
 }
@@ -42,10 +47,131 @@ fn fable_5_1_supports_every_documented_effort_and_summary_visibility() {
         (Fable5_1Effort::Xhigh, "xhigh"),
         (Fable5_1Effort::Max, "max"),
     ] {
-        let v = req(Model::fable_5_1().with_display(ThinkingDisplay::Summarized).with_effort(effort));
+        let v = req(Model::fable_5_1().with_display(FableThinkingDisplay::Summarized).with_effort(effort));
         assert_eq!(v["thinking"]["display"], "summarized");
         assert_eq!(v["output_config"]["effort"], name);
     }
+}
+
+#[test]
+fn fable_5_1_updates_and_binding_serialize_inside_thinking() {
+    let ctx = Context::new(Opening::None);
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 16)
+        .unwrap()
+        .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)
+        .unwrap();
+    let value = serde_json::to_value(request).unwrap();
+    assert_eq!(value["thinking"]["display"], "updates");
+    assert_eq!(value["thinking"]["block_binding"]["prefix_mismatch_behavior"], "drop_block");
+}
+
+#[test]
+fn binding_controls_serialize_on_every_enabled_thinking_shape() {
+    let ctx = Context::new(Opening::None);
+    let models: Vec<(Model, u32)> = vec![
+        (Model::fable_5_1().into(), 16),
+        (Model::fable_5().into(), 16),
+        (Model::opus_5().into(), 16),
+        (Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Omitted).into(), 16),
+        (Model::sonnet_5().into(), 16),
+        (Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Omitted).into(), 16),
+        (Model::haiku_4_5().with_thinking(1024).into(), 2048),
+    ];
+    for (model, max_tokens) in models {
+        let request = Request::new(&ctx, model, max_tokens)
+            .unwrap()
+            .with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error)
+            .unwrap();
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["thinking"]["block_binding"]["prefix_mismatch_behavior"], "error");
+        assert_eq!(
+            request.required_beta_features().filter(|feature| *feature == BetaFeature::ThinkingBindingControls).count(),
+            1
+        );
+    }
+
+    for model in [
+        Model::from(Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High)),
+        Model::from(Model::opus_4_8()),
+        Model::from(Model::sonnet_5().with_thinking_off()),
+        Model::from(Model::sonnet_4_6()),
+        Model::from(Model::haiku_4_5()),
+    ] {
+        let id = model.id();
+        assert_eq!(
+            Request::new(&ctx, model, 2048).unwrap().with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error).err(),
+            Some(RequestError::ThinkingBindingWithoutThinking { model: id })
+        );
+    }
+}
+
+#[test]
+fn fable_5_updates_require_the_same_beta_as_fable_5_1() {
+    let ctx = Context::new(Opening::None);
+    let request = Request::new(&ctx, Model::fable_5().with_display(FableThinkingDisplay::Updates), 16).unwrap();
+    assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
+    assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");
+}
+
+#[test]
+fn opus_5_thinking_off_rejects_later_effort_above_high() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_effort(PerMessageEffort::Xhigh);
+    ctx.push_user_text("one");
+    let model = Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High);
+    assert_eq!(
+        Request::new(&ctx, model, 16).err(),
+        Some(RequestError::PerMessageEffortUnsupportedWithThinkingOff { at: 0, effort: PerMessageEffort::Xhigh })
+    );
+    let mut overwritten = Context::new(Opening::None);
+    overwritten.push_effort(PerMessageEffort::Max);
+    overwritten.push_effort(PerMessageEffort::Low);
+    overwritten.push_user_text("one");
+    assert!(Request::new(&overwritten, Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High), 16).is_ok());
+
+    let mut valid = Context::new(Opening::None);
+    valid.push_effort(PerMessageEffort::High);
+    valid.push_user_text("one");
+    assert!(Request::new(&valid, Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High), 16).is_ok());
+}
+
+#[test]
+fn beta_features_are_inferred_once_in_wire_order() {
+    let mut ctx = Context::new(Opening::None).with_tools(vec![Tool::new("t", serde_json::json!({"type": "object"}))]);
+    ctx.push_user_text("one");
+    ctx.push_system(vec![SystemBlock::tool_removal(ToolReference::tool("t"))]).unwrap();
+    ctx.push_assistant_text("done");
+    ctx.push_user_text("two");
+    ctx.push_turn_scoped_text("one turn only").unwrap();
+    ctx.push_assistant_text("done");
+    ctx.push_effort(PerMessageEffort::Low);
+
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 16)
+        .unwrap()
+        .with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error)
+        .unwrap();
+    assert_eq!(
+        request.required_beta_features().collect::<Vec<_>>(),
+        vec![
+            BetaFeature::MidConversationOutputConfig,
+            BetaFeature::MidConversationToolChanges,
+            BetaFeature::ThinkingDisplayUpdates,
+            BetaFeature::ThinkingBindingControls,
+            BetaFeature::MidConversationSystemClearAt,
+        ]
+    );
+    assert_eq!(
+        CountRequest::new(&ctx, ModelId::Fable5_1).required_beta_features().collect::<Vec<_>>(),
+        vec![
+            BetaFeature::MidConversationOutputConfig,
+            BetaFeature::MidConversationToolChanges,
+            BetaFeature::MidConversationSystemClearAt,
+        ]
+    );
+    assert_eq!(
+        Request::new(&Context::new(Opening::None), Model::fable_5_1(), 16).unwrap().required_beta_features().count(),
+        0
+    );
 }
 
 #[test]
@@ -74,7 +200,7 @@ fn fable_5_default() {
 
 #[test]
 fn fable_5_summarized_and_xhigh() {
-    let v = req(Model::fable_5().with_display(ThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh));
+    let v = req(Model::fable_5().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh));
     assert_eq!(v["thinking"]["type"], "adaptive");
     assert_eq!(v["thinking"]["display"], "summarized");
     assert_eq!(v["output_config"]["effort"], "xhigh");
@@ -184,8 +310,14 @@ fn model_constants() {
     assert_eq!(ModelId::Sonnet4_6.knowledge_cutoff(), YearMonth::new(2025, Month::August));
     assert_eq!(ModelId::Sonnet4_6.training_cutoff(), YearMonth::new(2026, Month::January));
     assert_eq!(ModelId::Haiku4_5.training_cutoff(), YearMonth::new(2025, Month::July));
-    assert_eq!(ModelId::Opus4_8.price_per_mtok(), Pricing { input_cents_per_mtok: 500, output_cents_per_mtok: 2_500 });
-    assert_eq!(ModelId::Haiku4_5.price_per_mtok(), Pricing { input_cents_per_mtok: 100, output_cents_per_mtok: 500 });
+    assert_eq!(
+        ModelId::Opus4_8.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 500, cache_read_input_cents_per_mtok: 50, output_cents_per_mtok: 2_500 }
+    );
+    assert_eq!(
+        ModelId::Haiku4_5.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 100, cache_read_input_cents_per_mtok: 10, output_cents_per_mtok: 500 }
+    );
 }
 
 #[test]

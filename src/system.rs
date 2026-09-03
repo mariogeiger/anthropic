@@ -49,10 +49,12 @@
 //!
 //! # What each position admits
 //!
-//! The top-level `system` field takes text and nothing else. A system *message*
-//! takes text, [`SystemBlock::ToolAddition`], and [`SystemBlock::ToolRemoval`].
-//! The shared part is [`crate::block::TextBlock`], which both hold; the
-//! difference is what else they hold, which is why they are two types.
+//! The top-level `system` field takes text and nothing else. A persistent system
+//! *message* takes text, [`SystemBlock::ToolAddition`], and
+//! [`SystemBlock::ToolRemoval`]. Two beta message shapes remain disjoint from it:
+//! [`SystemMessage::Effort`] carries empty content and one effort change, while
+//! [`SystemMessage::TurnScoped`] carries text only and cannot carry a cache
+//! breakpoint. The shared text representation is [`crate::block::TextBlock`].
 //!
 //! # Placement
 //!
@@ -65,7 +67,142 @@ use serde::Serialize;
 
 use crate::block::TextBlock;
 use crate::context::CacheControl;
-use crate::values::{SystemBlockType, ToolReferenceType};
+use crate::values::{BetaFeature, SystemBlockType, ToolReferenceType, api_enum};
+
+api_enum! {
+    /// An effort level installed by a system message for later user turns.
+    ///
+    /// Fable 5.1 accepts the complete range. Opus 5 accepts it while thinking is
+    /// on and narrows to `high` and below while thinking is off; the request
+    /// checks that cross-message relation when it first knows both facts.
+    PerMessageEffort {
+        /// The least work.
+        Low => "low",
+        /// Between `low` and `high`.
+        Medium => "medium",
+        /// The documented default.
+        High => "high",
+        /// Above `high`.
+        Xhigh => "xhigh",
+        /// The most work.
+        Max => "max",
+    }
+}
+
+api_enum! {
+    /// When a mid-conversation system instruction stops rendering.
+    SystemClearAt {
+        /// It remains in force. This is represented by
+        /// [`SystemMessage::Persistent`] omitting `clear_at`.
+        Never => "never",
+        /// It clears once a later user message exists, while staying byte-for-byte
+        /// in conversation history.
+        NextUserMessage => "next_user_message",
+    }
+}
+
+/// One of the three disjoint system-message shapes inside `messages`.
+///
+/// The split makes the beta exclusions structural. A turn-scoped message holds
+/// text only, so it has nowhere to put a tool change, cache breakpoint, or
+/// `output_config`. An effort change carries empty content by construction and
+/// no `clear_at`. A persistent message is the stable text/tool-change form.
+#[derive(Debug, Clone)]
+pub enum SystemMessage {
+    /// Text or tool changes that remain in force.
+    Persistent(Vec<SystemBlock>),
+    /// An effort change that takes effect at the next user turn and remains until
+    /// another effort message changes it.
+    Effort(PerMessageEffort),
+    /// Text that stops rendering after the next user message but remains in the
+    /// transcript to preserve prompt and thinking bindings.
+    TurnScoped(Vec<TextBlock>),
+}
+
+impl SystemMessage {
+    /// A stable mid-conversation instruction or tool change.
+    pub fn persistent(blocks: Vec<SystemBlock>) -> Self {
+        Self::Persistent(blocks)
+    }
+
+    /// A cache-safe effort change for later user turns.
+    pub fn effort(effort: PerMessageEffort) -> Self {
+        Self::Effort(effort)
+    }
+
+    /// A reminder that clears after the next user message.
+    pub fn turn_scoped(blocks: Vec<TextBlock>) -> Self {
+        Self::TurnScoped(blocks)
+    }
+
+    /// The persistent blocks, where this message carries them.
+    pub fn persistent_content(&self) -> Option<&[SystemBlock]> {
+        match self {
+            Self::Persistent(blocks) => Some(blocks),
+            Self::Effort(_) | Self::TurnScoped(_) => None,
+        }
+    }
+
+    /// The turn-scoped text, where this message carries it.
+    pub fn turn_scoped_content(&self) -> Option<&[TextBlock]> {
+        match self {
+            Self::TurnScoped(blocks) => Some(blocks),
+            Self::Persistent(_) | Self::Effort(_) => None,
+        }
+    }
+
+    /// The installed effort, where this is an effort-only message.
+    pub fn installed_effort(&self) -> Option<PerMessageEffort> {
+        match self {
+            Self::Effort(effort) => Some(*effort),
+            Self::Persistent(_) | Self::TurnScoped(_) => None,
+        }
+    }
+
+    /// When this message clears. Effort-only messages do not render and
+    /// therefore have no clearing policy.
+    pub fn clear_at(&self) -> Option<SystemClearAt> {
+        match self {
+            Self::Persistent(_) => Some(SystemClearAt::Never),
+            Self::TurnScoped(_) => Some(SystemClearAt::NextUserMessage),
+            Self::Effort(_) => None,
+        }
+    }
+
+    pub(crate) fn carries_content(&self) -> bool {
+        !matches!(self, Self::Effort(_))
+    }
+
+    pub(crate) fn block_count(&self) -> usize {
+        match self {
+            Self::Persistent(blocks) => blocks.len(),
+            Self::TurnScoped(blocks) => blocks.len(),
+            Self::Effort(_) => 0,
+        }
+    }
+
+    pub(crate) fn cache_control_at(&mut self, block: usize) -> Option<&mut Option<CacheControl>> {
+        match self {
+            Self::Persistent(blocks) => blocks.get_mut(block).map(SystemBlock::cache_control_mut),
+            Self::Effort(_) | Self::TurnScoped(_) => None,
+        }
+    }
+
+    pub(crate) fn requires(&self, feature: BetaFeature) -> bool {
+        match feature {
+            BetaFeature::MidConversationOutputConfig => matches!(self, Self::Effort(_)),
+            BetaFeature::MidConversationToolChanges => matches!(
+                self,
+                Self::Persistent(blocks)
+                    if blocks.iter().any(|block| {
+                        matches!(block, SystemBlock::ToolAddition(_) | SystemBlock::ToolRemoval(_))
+                    })
+            ),
+            BetaFeature::MidConversationSystemClearAt => matches!(self, Self::TurnScoped(_)),
+            BetaFeature::ThinkingDisplayUpdates | BetaFeature::ThinkingBindingControls => false,
+        }
+    }
+}
 
 /// One block of a mid-conversation system message.
 ///
