@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::content::StreamedBlock;
 use crate::frame::{FrameError, decode_usage, require, require_str};
+use crate::input_transformation::{InputTransformation, decode_input_transformations};
 use crate::settle::ToolCall;
 use crate::stream::RefusalDetails;
 use crate::usage::Usage;
@@ -47,6 +48,9 @@ pub struct Response {
     pub stop_sequence: Option<String>,
     /// Why the model refused, on [`StopReason::Refusal`]. `None` otherwise.
     pub refusal: Option<RefusalDetails>,
+    /// Input blocks the API dropped before inference. `None` means the binding
+    /// controls beta was absent; `Some([])` means it checked and dropped nothing.
+    pub input_transformations: Option<Vec<InputTransformation>>,
     /// What the message cost, cache counts included.
     pub usage: Usage,
 }
@@ -75,6 +79,7 @@ impl Response {
             stop_reason: body.get("stop_reason").and_then(Value::as_str).and_then(StopReason::from_str),
             stop_sequence: body.get("stop_sequence").and_then(Value::as_str).map(str::to_owned),
             refusal: RefusalDetails::decode(body.get("stop_details")),
+            input_transformations: decode_input_transformations(body.get("input_transformations"))?,
             usage: decode_usage(body)?,
         })
     }
@@ -247,6 +252,31 @@ mod tests {
         assert_eq!(response.usage.cache_read_input_tokens, 1_043);
         assert_eq!(response.usage.total_input_tokens(), 1_079);
         assert!(response.usage.cache_hit_rate().unwrap() > 0.96);
+    }
+
+    #[test]
+    fn binding_reports_are_distinct_from_an_absent_beta() {
+        let checked = Response::from_json(&json!({
+            "id": "msg_checked", "model": "claude-fable-5-1", "content": [],
+            "input_transformations": []
+        }))
+        .unwrap();
+        assert_eq!(checked.input_transformations, Some(Vec::new()));
+
+        let dropped = Response::from_json(&json!({
+            "id": "msg_dropped", "model": "claude-fable-5-1", "content": [],
+            "input_transformations": [{
+                "type": "thinking_dropped", "path": "messages.1.content.0",
+                "reason": "model_binding_mismatch"
+            }]
+        }))
+        .unwrap();
+        let transformation = &dropped.input_transformations.as_ref().unwrap()[0];
+        assert_eq!(transformation.path(), Some("messages.1.content.0"));
+        assert_eq!(transformation.reason(), Some(crate::ThinkingDropReason::ModelBindingMismatch));
+
+        let absent = Response::from_json(&json!({"id": "msg_plain", "model": "claude-fable-5-1"})).unwrap();
+        assert_eq!(absent.input_transformations, None);
     }
 
     /// A tool-use response: the input arrives whole, and is still held as bytes so

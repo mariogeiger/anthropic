@@ -1,5 +1,5 @@
 use super::*;
-use crate::request::{Model, Request};
+use crate::request::{Model, ModelId, Request};
 
 fn req(ctx: &Context) -> serde_json::Value {
     serde_json::to_value(Request::new(ctx, Model::opus_4_8(), 1024).unwrap()).unwrap()
@@ -278,6 +278,74 @@ fn every_documented_placement_rule_is_enforced() {
     assert_eq!(chain.misplaced_system_message(), None);
     chain.push_assistant_text("ok");
     assert_eq!(chain.misplaced_system_message(), None, "the section precedes an assistant turn");
+}
+
+#[test]
+fn effort_only_messages_are_position_free_but_content_runs_are_not() {
+    use crate::request::{Request, RequestError};
+
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_effort(PerMessageEffort::Low);
+    ctx.push_user_text("summarize");
+    let value = serde_json::to_value(Request::new(&ctx, Model::opus_5(), 1024).unwrap()).unwrap();
+    assert_eq!(value["messages"][0]["role"], "system");
+    assert_eq!(value["messages"][0]["content"], serde_json::json!([]));
+    assert_eq!(value["messages"][0]["output_config"]["effort"], "low");
+    assert_eq!(ctx.misplaced_system_message(), None);
+    assert!(Request::new(&ctx, Model::fable_5_1(), 16).is_ok());
+    assert!(Request::new(&ctx, Model::opus_5(), 16).is_ok());
+    assert_eq!(
+        Request::new(&ctx, Model::fable_5(), 16).err(),
+        Some(RequestError::PerMessageEffortUnsupported { model: ModelId::Fable5, at: 0 })
+    );
+
+    let mut between_turns = Context::new(Opening::None);
+    between_turns.push_user_text("one");
+    between_turns.push_assistant_text("done");
+    between_turns.push_effort(PerMessageEffort::Medium);
+    between_turns.push_user_text("two");
+    assert!(Request::new(&between_turns, Model::opus_5(), 16).is_ok());
+    assert_eq!(between_turns.misplaced_system_message(), None);
+
+    let mut mixed_first = Context::new(Opening::None);
+    mixed_first.push_effort(PerMessageEffort::Low);
+    assert_eq!(mixed_first.push_system_text("now content").err(), Some(SystemMessageError::First));
+
+    let mut mixed_tail = Context::new(Opening::None);
+    mixed_tail.push_user_text("one");
+    mixed_tail.push_system_text("persistent").unwrap();
+    mixed_tail.push_effort(PerMessageEffort::High);
+    mixed_tail.push_user_text("two");
+    assert_eq!(mixed_tail.misplaced_system_message(), Some(2), "the whole adjacent run follows content rules");
+}
+
+#[test]
+fn turn_scoped_messages_are_text_only_and_never_cacheable() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("run the tool");
+    ctx.push_turn_scoped(vec![TextBlock::new("ask for every independent result")]).unwrap();
+    let value = req(&ctx);
+    assert_eq!(value["messages"][1]["role"], "system");
+    assert_eq!(value["messages"][1]["clear_at"], "next_user_message");
+    assert_eq!(
+        value["messages"][1]["content"][0],
+        serde_json::json!({"type": "text", "text": "ask for every independent result"})
+    );
+    assert_eq!(
+        ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).err(),
+        Some(RollCacheError::TurnScopedMessageNotCacheable)
+    );
+
+    ctx.push_user_text("the result");
+    assert_eq!(ctx.misplaced_system_message(), Some(1), "a following user is invalid, not a clearing shortcut");
+    assert_eq!(Context::new(Opening::None).push_turn_scoped(Vec::new()).err(), Some(SystemMessageError::Empty));
+
+    let mut cleared = Context::new(Opening::None);
+    cleared.push_user_text("one");
+    cleared.push_turn_scoped_text("current turn").unwrap();
+    cleared.push_assistant_text("done");
+    cleared.push_user_text("two");
+    assert_eq!(cleared.misplaced_system_message(), None, "the later user clears but does not invalidate it");
 }
 
 /// Availability is per model, so the same conversation is a request on Opus 5

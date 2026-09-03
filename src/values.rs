@@ -105,6 +105,60 @@ api_enum! {
 }
 
 api_enum! {
+    /// One beta capability a request body uses and therefore must name in the
+    /// `anthropic-beta` header.
+    ///
+    /// [`crate::request::Request::required_beta_features`] derives these from
+    /// the typed body, so a caller does not have to keep JSON and headers in
+    /// sync by hand.
+    BetaFeature {
+        /// Per-message effort changes inside `messages`.
+        MidConversationOutputConfig => "mid-conversation-output-config-2026-07-01",
+        /// Tool additions and removals inside `messages`.
+        MidConversationToolChanges => "mid-conversation-tool-changes-2026-07-01",
+        /// Thinking progress updates without exposing private reasoning.
+        ThinkingDisplayUpdates => "thinking-display-updates-2026-08-18",
+        /// Preserved-thinking mismatch controls and transformation reports.
+        ThinkingBindingControls => "thinking-binding-controls-2026-08-01",
+        /// System instructions that clear after the next user message.
+        MidConversationSystemClearAt => "mid-conversation-system-clear-at-2026-08-21",
+    }
+}
+
+impl BetaFeature {
+    pub(crate) const ALL: [Self; 5] = [
+        Self::MidConversationOutputConfig,
+        Self::MidConversationToolChanges,
+        Self::ThinkingDisplayUpdates,
+        Self::ThinkingBindingControls,
+        Self::MidConversationSystemClearAt,
+    ];
+}
+
+api_enum! {
+    /// What to do when a preserved thinking block's earlier conversation no
+    /// longer matches the one that produced its signature.
+    PrefixMismatchBehavior {
+        /// Refuse the request, which makes an accidental history edit loud.
+        Error => "error",
+        /// Drop the mismatched block and every later thinking block, then report
+        /// each removal in `input_transformations`.
+        DropBlock => "drop_block",
+    }
+}
+
+api_enum! {
+    roundtrip
+    /// Why the API dropped a thinking block before inference.
+    ThinkingDropReason {
+        /// The serving model cannot read the producing model's block.
+        ModelBindingMismatch => "model_binding_mismatch",
+        /// Earlier conversation bytes no longer match the signed prefix.
+        PrefixBindingMismatch => "prefix_binding_mismatch",
+    }
+}
+
+api_enum! {
     /// The `thinking.type` of a request. Which forms a model accepts is
     /// model-specific, which is why the per-model types in [`crate::request`]
     /// choose between them rather than exposing this one.
@@ -123,8 +177,9 @@ api_enum! {
 }
 
 api_enum! {
-    /// The `thinking.display` of a request: whether reasoning text is sent back.
-    /// Opus 4.7 and later.
+    /// The shared `thinking.display` vocabulary for models without the Fable
+    /// progress-update beta. See [`crate::model::FableThinkingDisplay`] for
+    /// the model-specific superset.
     ThinkingDisplay {
         /// A condensed summary of the reasoning arrives as `thinking_delta`
         /// events.
