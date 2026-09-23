@@ -349,8 +349,8 @@ impl ModelId {
             ModelId::Fable5 => (1_000, 100, 5_000),
             ModelId::Opus5_5 => (400, 20, 2_000),
             ModelId::Opus5 | ModelId::Opus4_8 => (500, 50, 2_500),
-            // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
-            ModelId::Sonnet5 | ModelId::Sonnet4_6 => (300, 30, 1_500),
+            ModelId::Sonnet5 => (200, 20, 1_000),
+            ModelId::Sonnet4_6 => (300, 30, 1_500),
             ModelId::Haiku4_5 => (100, 10, 500),
         };
         Pricing {

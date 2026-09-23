@@ -400,6 +400,14 @@ fn model_constants() {
         Pricing { input_cents_per_mtok: 500, cache_read_input_cents_per_mtok: 50, output_cents_per_mtok: 2_500 }
     );
     assert_eq!(
+        ModelId::Sonnet5.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 200, cache_read_input_cents_per_mtok: 20, output_cents_per_mtok: 1_000 }
+    );
+    assert_eq!(
+        ModelId::Sonnet4_6.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 300, cache_read_input_cents_per_mtok: 30, output_cents_per_mtok: 1_500 }
+    );
+    assert_eq!(
         ModelId::Haiku4_5.price_per_mtok(),
         Pricing { input_cents_per_mtok: 100, cache_read_input_cents_per_mtok: 10, output_cents_per_mtok: 500 }
     );

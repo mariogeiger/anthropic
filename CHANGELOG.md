@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1
+
+- Claude Sonnet 5 pricing now records the permanent $2/MTok input,
+  $0.20/MTok cache-read, and $10/MTok output rates. Anthropic canceled the
+  previously scheduled September increase to $3/$15; Sonnet 4.6 remains at
+  $3/$15 with $0.30 cache reads.
+
+  `anthropic` is now 0.10.1.
+
 ## 0.10.0
 
 - Claude Opus 5.5 is now a first-class model: `Model::opus_5_5`,
