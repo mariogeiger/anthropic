@@ -46,9 +46,10 @@ on model-specific types: a parameter a given model rejects does not exist on tha
 model's type. Adding support for another model means a new type carrying only its
 accepted parameters — never widening an existing one.
 
-The subsets are not cosmetically different. Thinking is always on for Fable 5 and
+The subsets are not cosmetically different. Thinking is always on for Opus 5.5 and Fable 5 and
 has no off state; on Opus 4.8 "off" is an *omitted* `thinking` field; on Opus 5
-and Sonnet 5 an omitted field leaves thinking *on*, so off must be stated. Opus 5
+and Sonnet 5 an omitted field leaves thinking *on*, so off must be stated. Opus
+5.5 never has an off state at all. Opus 5
 makes the accepted effort range depend on whether thinking is on, which is why
 its effort lives *inside* its thinking state rather than beside it.
 

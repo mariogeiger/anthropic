@@ -4,7 +4,7 @@ Rust bindings for the [Anthropic Messages API](https://docs.anthropic.com/en/api
 
 Bring your own HTTP client. This crate hands you a `Serialize` request body and decodes what comes back: a streaming decoder, a response decoder, and the usage counts that prove your prompt cache is working.
 
-Currently modeled: `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
+Currently modeled: `claude-opus-5-5`, `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claude-opus-4-8`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`.
 
 ## What the types make impossible
 
@@ -12,7 +12,7 @@ Currently modeled: `claude-fable-5-1`, `claude-fable-5`, `claude-opus-5`, `claud
 - **A new server event cannot break the decoder.** Anthropic's versioning policy permits new event types. An unknown event, block kind, or delta kind is a variant that means *ignore me*, never an error. A frame that contradicts the schema still is one.
 - **A silent cache failure cannot hide.** A cached prefix below the model's minimum caches nothing and returns no error. `Usage::cache_hit_rate` is how you notice. Merging usage across frames is a pointwise maximum, so a later frame that reports fewer fields cannot zero the cache counts an earlier one gave you.
 - **A stop reason cannot be mistaken for the end of a stream.** `message_delta` carries `stop_reason` but is not terminal; only `message_stop` and `error` are. A stream cut off in between fails to settle and says the stop reason had already arrived.
-- **A parameter a model rejects does not exist on that model's type.** Fable 5.1 has no thinking-off or temperature method; Sonnet 4.6 has no `xhigh` effort; Opus 5 with thinking off has no `xhigh` or `max`; Haiku 4.5 has no effort at all. For the request-level relation, `Request::with_tool_choice` rejects forced calls on Fable 5.1 before serialization.
+- **A parameter a model rejects does not exist on that model's type.** Opus 5.5 and Fable 5.1 have no thinking-off or temperature method; Sonnet 4.6 has no `xhigh` effort; Opus 5 with thinking off has no `xhigh` or `max`; Haiku 4.5 has no effort at all. For the request-level relation, `Request::with_tool_choice` rejects forced calls on Opus 5.5 and Fable 5.1 before serialization.
 - **A beta field cannot silently lose its header.** `Request::required_beta_features` derives the exact `anthropic-beta` values from system messages and thinking controls, including combinations of several betas. `CountRequest` does the same for its shared conversation.
 - **System-message shapes cannot bleed into each other.** Persistent messages carry text or tool changes, effort-only messages carry empty content and `output_config`, and turn-scoped messages carry text with `clear_at` but no cache breakpoint. Consecutive messages are validated as one run, matching the API.
 - **A value outside an API vocabulary cannot be named.** Every closed set of wire strings is an enum that serializes to its own string, so there is no `&'static str` field to put an unknown value in. A month is one of twelve variants, not a `u8` documented as 1–12; a temperature is a newtype, not an `f32` documented as 0–1.
@@ -29,7 +29,7 @@ per model, the four cache breakpoints, tools with their search and validation
 flags, `tool_choice`, stop sequences, `service_tier`, `metadata`, structured
 output, images, documents, search results, and mid-conversation system messages
 including persistent tool additions/removals, per-message effort, and turn-scoped
-reminders. Both Fable models expose progress-update display, and every enabled
+reminders. Opus 5.5 and both Fable models expose progress-update display, and every enabled
 thinking model exposes preserved-thinking binding controls, with each required
 beta header inferred from the body. On the
 way in: every documented event and delta kind, content blocks, citations, refusal

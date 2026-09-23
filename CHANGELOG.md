@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- Claude Opus 5.5 is now a first-class model: `Model::opus_5_5`,
+  `Opus5_5`, `Opus5_5Effort`, `Opus5_5ThinkingDisplay`, and
+  `ModelId::Opus5_5`. The emitted model ID is `claude-opus-5-5`.
+- Its type admits adaptive thinking only, all five effort levels, and omitted,
+  summarized, or beta progress-update display. The documented default is
+  medium effort. Forced tool choice is refused before serialization.
+- Documented facts are recorded beside the other models: 1M-token context,
+  128K maximum output, 512-token cache minimum, June 2026 knowledge and
+  training cutoffs, and $4/$20 input/output plus $0.20 cache-read pricing.
+  Mid-conversation system messages, per-message effort, and preserved-thinking
+  binding controls are supported.
+- First-party live probes returned 200 for typed low-effort, structured-output,
+  and custom-tool requests, and the documented 400 errors for disabled thinking and forced tool choice.
+
+  `anthropic` is now 0.10.0.
+
 ## 0.9.0
 
 - Claude Fable 5.1 now models all documented beta controls. Per-message effort

@@ -17,6 +17,49 @@ fn approx(v: &Value, expected: f64) {
 }
 
 #[test]
+fn opus_5_5_default_and_constants() {
+    let v = req(Model::opus_5_5());
+    assert_eq!(v["model"], "claude-opus-5-5");
+    assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "omitted"}));
+    assert_eq!(v["output_config"]["effort"], "medium");
+    assert!(v.get("temperature").is_none());
+
+    let id = ModelId::Opus5_5;
+    assert_eq!(id.context_window_tokens(), 1_000_000);
+    assert_eq!(id.max_output_tokens(), 128_000);
+    assert_eq!(id.min_cacheable_prefix_tokens(), 512);
+    assert_eq!(id.knowledge_cutoff(), YearMonth::new(2026, Month::June));
+    assert_eq!(id.training_cutoff(), YearMonth::new(2026, Month::June));
+    assert_eq!(
+        id.price_per_mtok(),
+        Pricing { input_cents_per_mtok: 400, cache_read_input_cents_per_mtok: 20, output_cents_per_mtok: 2_000 }
+    );
+    assert!(id.accepts_mid_conversation_system_message());
+    assert!(id.accepts_per_message_effort());
+    assert!(!id.accepts_forced_tool_choice());
+}
+
+#[test]
+fn opus_5_5_supports_every_documented_effort_and_display() {
+    for (effort, name) in [
+        (Opus5_5Effort::Low, "low"),
+        (Opus5_5Effort::Medium, "medium"),
+        (Opus5_5Effort::High, "high"),
+        (Opus5_5Effort::Xhigh, "xhigh"),
+        (Opus5_5Effort::Max, "max"),
+    ] {
+        let model = Model::opus_5_5().with_display(Opus5_5ThinkingDisplay::Summarized).with_effort(effort);
+        let v = req(model);
+        assert_eq!(v["thinking"]["display"], "summarized");
+        assert_eq!(v["output_config"]["effort"], name);
+    }
+
+    let ctx = Context::new(Opening::None);
+    let request = Request::new(&ctx, Model::opus_5_5().with_display(Opus5_5ThinkingDisplay::Updates), 16).unwrap();
+    assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
+}
+
+#[test]
 fn fable_5_1_default_and_constants() {
     let v = req(Model::fable_5_1());
     assert_eq!(v["model"], "claude-fable-5-1");
@@ -69,6 +112,7 @@ fn fable_5_1_updates_and_binding_serialize_inside_thinking() {
 fn binding_controls_serialize_on_every_enabled_thinking_shape() {
     let ctx = Context::new(Opening::None);
     let models: Vec<(Model, u32)> = vec![
+        (Model::opus_5_5().into(), 16),
         (Model::fable_5_1().into(), 16),
         (Model::fable_5().into(), 16),
         (Model::opus_5().into(), 16),
@@ -175,14 +219,55 @@ fn beta_features_are_inferred_once_in_wire_order() {
 }
 
 #[test]
-fn fable_5_1_refuses_forced_tool_choice_before_serialization() {
+fn always_on_models_refuse_forced_tool_choice_before_serialization() {
     let ctx = Context::new(Opening::None);
-    for choice in [ToolChoice::any(), ToolChoice::tool("read")] {
-        let error = Request::new(&ctx, Model::fable_5_1(), 16).unwrap().with_tool_choice(choice).err().unwrap();
-        assert!(matches!(error, RequestError::ForcedToolChoiceUnsupported { model: ModelId::Fable5_1, .. }));
+    for model in [Model::from(Model::opus_5_5()), Model::from(Model::fable_5_1())] {
+        let id = model.id();
+        for choice in [ToolChoice::any(), ToolChoice::tool("read")] {
+            let error = Request::new(
+                &ctx,
+                match id {
+                    ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
+                    _ => unreachable!(),
+                },
+                16,
+            )
+            .unwrap()
+            .with_tool_choice(choice)
+            .err()
+            .unwrap();
+            assert!(matches!(error, RequestError::ForcedToolChoiceUnsupported { model, .. } if model == id));
+        }
+        assert!(
+            Request::new(
+                &ctx,
+                match id {
+                    ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
+                    _ => unreachable!(),
+                },
+                16
+            )
+            .unwrap()
+            .with_tool_choice(ToolChoice::auto())
+            .is_ok()
+        );
+        assert!(
+            Request::new(
+                &ctx,
+                match id {
+                    ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
+                    _ => unreachable!(),
+                },
+                16
+            )
+            .unwrap()
+            .with_tool_choice(ToolChoice::none())
+            .is_ok()
+        );
     }
-    assert!(Request::new(&ctx, Model::fable_5_1(), 16).unwrap().with_tool_choice(ToolChoice::auto()).is_ok());
-    assert!(Request::new(&ctx, Model::fable_5_1(), 16).unwrap().with_tool_choice(ToolChoice::none()).is_ok());
     assert!(Request::new(&ctx, Model::fable_5(), 16).unwrap().with_tool_choice(ToolChoice::any()).is_ok());
 }
 

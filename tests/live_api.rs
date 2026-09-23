@@ -636,7 +636,12 @@ fn live_ok_service_tier_metadata_and_output_format_are_accepted() {
     let key = key_or_skip!();
     let mut ctx = Context::new(Opening::None);
     ctx.push_user_text("Give me the number seven as JSON matching the schema.");
-    let schema = json!({"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]});
+    let schema = json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    });
     let request = Request::new(&ctx, Model::opus_5(), 60)
         .unwrap()
         .with_service_tier(ServiceTier::StandardOnly)

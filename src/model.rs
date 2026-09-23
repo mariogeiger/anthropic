@@ -5,9 +5,9 @@
 //! is its own type: a parameter Sonnet 4.6 rejects does not exist on `Sonnet4_6`,
 //! and the compiler refuses the request the API would have refused.
 //!
-//! The differences are not cosmetic. Thinking is always on for Fable 5.1 and
-//! Fable 5 and has no off state; Fable 5.1 additionally refuses forced tool
-//! choice. On Opus 4.8, "off" is an *omitted* `thinking` field; on Opus 5 and
+//! The differences are not cosmetic. Thinking is always on for Opus 5.5,
+//! Fable 5.1, and Fable 5 and has no off state; Opus 5.5 and Fable 5.1 also
+//! refuse forced tool choice. On Opus 4.8, "off" is an *omitted* `thinking` field; on Opus 5 and
 //! Sonnet 5 an omitted field means thinking stays *on*, so off must be stated
 //! explicitly. Opus 5 goes further and makes the accepted effort range depend on
 //! whether thinking is on, which is why its effort lives inside
@@ -90,7 +90,9 @@ pub enum ModelId {
     Fable5_1,
     /// `claude-fable-5`, the prior frontier tier.
     Fable5,
-    /// `claude-opus-5`, the current Opus tier.
+    /// `claude-opus-5-5`, the current Opus tier.
+    Opus5_5,
+    /// `claude-opus-5`, the prior Opus tier.
     Opus5,
     /// `claude-opus-4-8`, the prior Opus tier.
     Opus4_8,
@@ -215,6 +217,7 @@ impl ModelId {
         match self {
             ModelId::Fable5_1 => "claude-fable-5-1",
             ModelId::Fable5 => "claude-fable-5",
+            ModelId::Opus5_5 => "claude-opus-5-5",
             ModelId::Opus5 => "claude-opus-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
             ModelId::Sonnet5 => "claude-sonnet-5",
@@ -232,7 +235,7 @@ impl ModelId {
     pub fn min_cacheable_prefix_tokens(self) -> u32 {
         match self {
             ModelId::Fable5_1 | ModelId::Fable5 => 512,
-            ModelId::Opus5 => 512,
+            ModelId::Opus5_5 | ModelId::Opus5 => 512,
             ModelId::Opus4_8 => 1_024,
             ModelId::Sonnet5 => 1_024,
             ModelId::Sonnet4_6 => 1_024,
@@ -244,7 +247,7 @@ impl ModelId {
     pub fn context_window_tokens(self) -> u32 {
         match self {
             ModelId::Fable5_1 | ModelId::Fable5 => 1_000_000,
-            ModelId::Opus5 => 1_000_000,
+            ModelId::Opus5_5 | ModelId::Opus5 => 1_000_000,
             ModelId::Opus4_8 => 1_000_000,
             ModelId::Sonnet5 => 1_000_000,
             ModelId::Sonnet4_6 => 1_000_000,
@@ -255,8 +258,8 @@ impl ModelId {
     /// Whether this model accepts a `{"role": "system"}` entry inside `messages`.
     ///
     /// A closed list, not a tier rule: the feature is documented as available on
-    /// Fable 5.1, Fable 5, Mythos 5.1, Mythos 5, Opus 4.8 and Opus 5, and
-    /// *not* on Sonnet 5, where the documentation says to use the top-level
+    /// Fable 5.1, Fable 5, Mythos 5.1, Mythos 5, Opus 5.5, Opus 5, Opus 4.8,
+    /// and *not* on Sonnet 5, where the documentation says to use the top-level
     /// `system` field instead. Every model the list omits is therefore `false`
     /// here, so adding a model states its answer rather than inheriting a guess.
     ///
@@ -271,26 +274,26 @@ impl ModelId {
     /// for why that is a runtime refusal rather than a type error.
     pub fn accepts_mid_conversation_system_message(self) -> bool {
         match self {
-            ModelId::Fable5_1 | ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
+            ModelId::Fable5_1 | ModelId::Fable5 | ModelId::Opus5_5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
             ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
         }
     }
 
     /// Whether this model accepts an effort-only system message.
     ///
-    /// The beta is a closed model list: Fable 5.1, Mythos 5.1, and Opus 5.
-    /// Mythos is not modeled by this crate, so exactly two variants answer true.
+    /// The beta is a closed model list: Fable 5.1, Mythos 5.1, Opus 5.5, and
+    /// Opus 5. Mythos is not modeled by this crate.
     pub fn accepts_per_message_effort(self) -> bool {
-        matches!(self, ModelId::Fable5_1 | ModelId::Opus5)
+        matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Opus5)
     }
 
     /// Whether this model accepts `tool_choice` values that force a call.
     ///
-    /// Fable 5.1 rejects both `any` and a named `tool`: always-on thinking must
-    /// be allowed to run before the model chooses a call. Every earlier model
-    /// carried here accepts the full tool-choice vocabulary.
+    /// Opus 5.5 and Fable 5.1 reject both `any` and a named `tool`: always-on
+    /// thinking must be allowed to run before the model chooses a call. Every
+    /// other model carried here accepts the full tool-choice vocabulary.
     pub fn accepts_forced_tool_choice(self) -> bool {
-        !matches!(self, ModelId::Fable5_1)
+        !matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5)
     }
 
     /// Maximum output tokens in a single synchronous Messages API response.
@@ -300,7 +303,7 @@ impl ModelId {
     pub fn max_output_tokens(self) -> u32 {
         match self {
             ModelId::Fable5_1 | ModelId::Fable5 => 128_000,
-            ModelId::Opus5 => 128_000,
+            ModelId::Opus5_5 | ModelId::Opus5 => 128_000,
             ModelId::Opus4_8 => 128_000,
             ModelId::Sonnet5 => 128_000,
             ModelId::Sonnet4_6 => 128_000,
@@ -314,6 +317,7 @@ impl ModelId {
         let (year, month) = match self {
             ModelId::Fable5_1 => (2026, Month::June),
             ModelId::Fable5 => (2026, Month::January),
+            ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
             ModelId::Sonnet5 => (2026, Month::January),
@@ -328,6 +332,7 @@ impl ModelId {
         let (year, month) = match self {
             ModelId::Fable5_1 => (2026, Month::June),
             ModelId::Fable5 => (2026, Month::January),
+            ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
             ModelId::Sonnet5 => (2026, Month::January),
@@ -342,6 +347,7 @@ impl ModelId {
         let (input, cache_read_input, output) = match self {
             ModelId::Fable5_1 => (1_000, 25, 5_000),
             ModelId::Fable5 => (1_000, 100, 5_000),
+            ModelId::Opus5_5 => (400, 20, 2_000),
             ModelId::Opus5 | ModelId::Opus4_8 => (500, 50, 2_500),
             // Sonnet 5 standard price; intro $2/$10 through 2026-08-31 not represented.
             ModelId::Sonnet5 | ModelId::Sonnet4_6 => (300, 30, 1_500),
@@ -357,6 +363,8 @@ impl ModelId {
 
 /// A Claude model plus its per-call parameters.
 pub enum Model {
+    /// Opus 5.5 and its parameters.
+    Opus5_5(Opus5_5),
     /// Fable 5.1 and its parameters.
     Fable5_1(Fable5_1),
     /// Fable 5 and its parameters.
@@ -377,6 +385,7 @@ impl Model {
     /// Identity without per-call parameters.
     pub fn id(&self) -> ModelId {
         match self {
+            Model::Opus5_5(_) => ModelId::Opus5_5,
             Model::Fable5_1(_) => ModelId::Fable5_1,
             Model::Fable5(_) => ModelId::Fable5,
             Model::Opus5(_) => ModelId::Opus5,
@@ -400,6 +409,10 @@ impl Model {
 
     /// Default params for each model. Chain `.with_*` on the returned struct,
     /// then pass to `Request::new` (which accepts `impl Into<Model>`).
+    /// Opus 5.5 with its default parameters.
+    pub fn opus_5_5() -> Opus5_5 {
+        Opus5_5::default()
+    }
     /// Fable 5.1 with its default parameters.
     pub fn fable_5_1() -> Fable5_1 {
         Fable5_1::default()
@@ -430,6 +443,11 @@ impl Model {
     }
 }
 
+impl From<Opus5_5> for Model {
+    fn from(p: Opus5_5) -> Self {
+        Model::Opus5_5(p)
+    }
+}
 impl From<Fable5_1> for Model {
     fn from(p: Fable5_1) -> Self {
         Model::Fable5_1(p)
@@ -465,6 +483,11 @@ impl From<Haiku4_5> for Model {
         Model::Haiku4_5(p)
     }
 }
+
+// ── Opus 5.5 ────────────────────────────────────────────────────────────────
+
+mod opus_5_5;
+pub use opus_5_5::{Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay};
 
 // ── Fable 5.1 ────────────────────────────────────────────────────────────────
 

@@ -30,9 +30,9 @@ use serde::Serialize;
 // The canonical home is [`crate::model`].
 pub use crate::model::{
     Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Haiku4_5, Haiku4_5Thinking, Model, ModelId,
-    Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing,
-    Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5Effort, Sonnet5Thinking, Temperature,
-    TemperatureError, YearMonth,
+    Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Opus5Effort,
+    Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5,
+    Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -519,7 +519,7 @@ impl<'a> Request<'a> {
 
     fn thinking_is_enabled(&self) -> bool {
         match &self.model {
-            Model::Fable5_1(_) | Model::Fable5(_) => true,
+            Model::Opus5_5(_) | Model::Fable5_1(_) | Model::Fable5(_) => true,
             Model::Opus5(model) => matches!(model.thinking, Opus5Thinking::Adaptive { .. }),
             Model::Opus4_8(model) => matches!(model.thinking, Opus4_8Thinking::Adaptive { .. }),
             Model::Sonnet5(model) => matches!(model.thinking, Sonnet5Thinking::Adaptive { .. }),
@@ -533,6 +533,9 @@ impl<'a> Request<'a> {
             return true;
         }
         match (&self.model, feature) {
+            (Model::Opus5_5(model), BetaFeature::ThinkingDisplayUpdates) => {
+                model.display == Opus5_5ThinkingDisplay::Updates
+            }
             (Model::Fable5_1(model), BetaFeature::ThinkingDisplayUpdates) => {
                 model.display == FableThinkingDisplay::Updates
             }
@@ -597,8 +600,9 @@ struct BlockBinding {
 struct AdaptiveThinking {
     #[serde(rename = "type")]
     kind: ThinkingType,
-    // Fable 5.1 has one extra beta value, so the public model types hold two
-    // different closed enums and this private wire shape receives their strings.
+    // Only some always-on-thinking models accept the beta `updates` value, so
+    // public model types carry their own closed enums and this private wire
+    // shape receives their strings.
     #[serde(skip_serializing_if = "Option::is_none")]
     display: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -703,6 +707,7 @@ impl Serialize for Request<'_> {
         let (temperature, thinking, output_config) = match &self.model {
             // Thinking is always on — always emit the adaptive block (the
             // request is a complete record of what the model sees).
+            Model::Opus5_5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
             Model::Fable5_1(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
             Model::Fable5(p) => (None, Some(adaptive(Some(p.display.as_str()))), effort(p.effort.as_str())),
             // Adaptive thinking is always emitted explicitly; "off" is the explicit

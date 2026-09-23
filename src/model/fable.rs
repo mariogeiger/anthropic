@@ -6,9 +6,8 @@ use crate::values::api_enum;
 api_enum! {
     /// What Fable 5 and Fable 5.1 return from adaptive thinking.
     ///
-    /// `Updates` is intentionally absent from [`crate::ThinkingDisplay`]: only
-    /// these Fable models produce progress-update blocks, so the separate type
-    /// keeps the beta value off models that cannot use it.
+    /// `Updates` is intentionally absent from [`crate::ThinkingDisplay`]: the
+    /// separate Fable type keeps the beta value off models that cannot use it.
     FableThinkingDisplay {
         /// Provider-safe reasoning summaries are returned.
         Summarized => "summarized",
