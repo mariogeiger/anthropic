@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.11.0
+
+- `prompt_cache` predicts what the server's prompt cache does with a sequence
+  of requests: `PromptCache::serve` takes a `Request`, its start time and a
+  `PrefixTokens` count per breakpoint, and returns a `Served` naming the entry
+  read (`Touched`, located by `Position`), the entries written, and the
+  `PromptUsage` that `usage` will report. `LOOKBACK_POSITIONS` is the measured
+  lookback window. Inconsistent inputs are refused with a `ServeError`.
+- `PromptCache::explain` serves a request given the usage the server reported,
+  attributing any shortfall in the read to entries the server lost — the least
+  loss that explains it, returned in `Served::lost` — and refuses anything else
+  as `ServeError::Unexplained`. The live test and the trace replay hold the
+  prediction to this: exact up to loss, with every hand-written scenario
+  recorded loss-free.
+- `CacheTtl::from_str` is public, the inverse of `as_str`.
+- `tests/prompt_cache_traces.rs` replays the live traces recorded in
+  `tests/captured/prompt_cache/`; `tests/live_prompt_cache.rs` (ignored,
+  `.key`-gated) records them again.
+- First-party measurements of 2026-09-25 that disagree with the documentation,
+  and which the prediction follows:
+  - The lookback window holds 22 positions counting the breakpoint, not 20.
+  - A breakpoint at or before the entry read places its own entry, free.
+  - An entry exists only where a breakpoint placed it.
+  - Reading an entry keeps alive what its writer built it on, but not an entry
+    that merely shares its prefix; writing refreshes nothing.
+  - `tool_choice` `auto` and `none` share entries, as do `any` and a named
+    `tool`; only forcing, and under forcing `disable_parallel_tool_use`, moves
+    the messages. Adding an image moves nothing. This held on every model
+    measured.
+  - Where the thinking configuration and effort render is per model: after
+    every cacheable position on Opus 5.5 and Fable 5.1, before the messages on
+    Haiku 4.5, before the tools on the rest. Thinking `display` renders nowhere.
+- First-party behaviour the prediction does not model:
+  - A 5-minute entry was still read 310 s after its write, and gone by 315 s.
+  - Entries are lost before their TTL, and not as a function of the requests:
+    replaying one recorded sequence of bodies read a different entry at some
+    steps each time, never more than predicted.
+  - Sonnet 4.6 billed every write but read none, not even of the system
+    prompt, whenever the first user and assistant turns both ran to tens of
+    words; with either turn a single word it cached normally.
+  - `count_tokens` on a truncated request exceeds the prefix it ends with: by 4
+    after a user turn, 2 after an assistant turn, and 70 more when tools are
+    present.
+
+  `anthropic` is now 0.11.0.
+
 ## 0.10.1
 
 - Claude Sonnet 5 pricing now records the permanent $2/MTok input,

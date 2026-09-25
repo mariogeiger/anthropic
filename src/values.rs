@@ -434,6 +434,7 @@ api_enum! {
 }
 
 api_enum! {
+    roundtrip
     /// How long a cache entry lives.
     ///
     /// Both refresh for free on a hit; they differ in write price and in the gap

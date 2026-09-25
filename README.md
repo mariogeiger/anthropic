@@ -108,6 +108,30 @@ println!("{}", response.text());
 println!("{} tokens read from cache", response.usage.cache_read_input_tokens);
 ```
 
+## Predicting the prompt cache
+
+`PromptCache` replays the server's caching rules on a sequence of requests and
+says, for each, which entry it reads, which it writes, and what `usage` will
+report. You supply when each request started and how many tokens each
+breakpoint's prefix holds; the crate cannot tokenize.
+
+```rust
+use std::time::Duration;
+use anthropic::prompt_cache::{PrefixTokens, PromptCache, PromptUsage};
+
+let mut cache = PromptCache::new();
+let tokens = PrefixTokens::new(vec![1869, 2556], 2560);
+let predicted = cache.serve(&request, Duration::ZERO, &tokens)?;
+let observed = cache.explain(&next, Duration::from_secs(5), &tokens, &PromptUsage::from(&response.usage))?;
+println!("predicted {:?}; the server had lost {:?}", predicted.usage, observed.lost);
+```
+
+`serve` predicts; `explain` takes the usage the server reported and accounts
+for entries it lost, which the first-party cache does, unpredictably. The rules
+were measured against the first-party API, and where they differ from the
+documentation the module says so. `tests/captured/prompt_cache/`
+holds the recorded traces the prediction is checked against.
+
 ## Install
 
 ```toml

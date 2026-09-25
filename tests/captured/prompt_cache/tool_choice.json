@@ -1,0 +1,233 @@
+{
+  "nonce": "run-18d899882b186191-tool_choice",
+  "scenario": "tool_choice",
+  "seed": 1790349661997392273,
+  "steps": [
+    {
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": [
+              {
+                "cache_control": {
+                  "ttl": "5m",
+                  "type": "ephemeral"
+                },
+                "text": "question: mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "output_config": {
+          "effort": "low"
+        },
+        "service_tier": "auto",
+        "system": [
+          {
+            "cache_control": {
+              "ttl": "5m",
+              "type": "ephemeral"
+            },
+            "text": "run-18d899882b186191-tool_choice system: harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle",
+            "type": "text"
+          }
+        ],
+        "thinking": {
+          "display": "omitted",
+          "type": "adaptive"
+        },
+        "tools": [
+          {
+            "description": "Look a key up.",
+            "input_schema": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      },
+      "started_at_us": 734477,
+      "tokens": {
+        "at_breakpoints": [
+          1870,
+          2321
+        ],
+        "total": 2325
+      },
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 2321
+        },
+        "cache_creation_input_tokens": 2321,
+        "cache_read_input_tokens": 0,
+        "inference_geo": "global",
+        "input_tokens": 4,
+        "output_tokens": 0,
+        "service_tier": "standard"
+      }
+    },
+    {
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": [
+              {
+                "cache_control": {
+                  "ttl": "5m",
+                  "type": "ephemeral"
+                },
+                "text": "question: mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "output_config": {
+          "effort": "low"
+        },
+        "service_tier": "auto",
+        "system": [
+          {
+            "cache_control": {
+              "ttl": "5m",
+              "type": "ephemeral"
+            },
+            "text": "run-18d899882b186191-tool_choice system: harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle",
+            "type": "text"
+          }
+        ],
+        "thinking": {
+          "display": "omitted",
+          "type": "adaptive"
+        },
+        "tool_choice": {
+          "type": "none"
+        },
+        "tools": [
+          {
+            "description": "Look a key up.",
+            "input_schema": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      },
+      "started_at_us": 5637301,
+      "tokens": {
+        "at_breakpoints": [
+          1870,
+          2321
+        ],
+        "total": 2325
+      },
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2321,
+        "inference_geo": "global",
+        "input_tokens": 4,
+        "output_tokens": 0,
+        "service_tier": "standard"
+      }
+    },
+    {
+      "request": {
+        "max_tokens": 1,
+        "messages": [
+          {
+            "content": [
+              {
+                "cache_control": {
+                  "ttl": "5m",
+                  "type": "ephemeral"
+                },
+                "text": "question: mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet marble ledger timber harbor willow island pepper garden orchard marble mosaic velvet meadow thunder island quartz window summit ember mosaic river copper compass jasmine quartz lantern canyon falcon nectar river violet anchor kettle saddle lantern willow glacier oyster stone violet",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "model": "claude-opus-5-5",
+        "output_config": {
+          "effort": "low"
+        },
+        "service_tier": "auto",
+        "system": [
+          {
+            "cache_control": {
+              "ttl": "5m",
+              "type": "ephemeral"
+            },
+            "text": "run-18d899882b186191-tool_choice system: harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle harbor willow glacier oyster stone orchard marble ledger timber harbor thunder island pepper garden orchard ember mosaic velvet meadow thunder jasmine quartz window summit ember nectar river copper compass jasmine saddle lantern canyon falcon nectar stone violet anchor kettle saddle",
+            "type": "text"
+          }
+        ],
+        "thinking": {
+          "display": "omitted",
+          "type": "adaptive"
+        },
+        "tool_choice": {
+          "disable_parallel_tool_use": true,
+          "type": "auto"
+        },
+        "tools": [
+          {
+            "description": "Look a key up.",
+            "input_schema": {
+              "properties": {
+                "key": {
+                  "type": "string"
+                }
+              },
+              "type": "object"
+            },
+            "name": "lookup"
+          }
+        ]
+      },
+      "started_at_us": 10718772,
+      "tokens": {
+        "at_breakpoints": [
+          1870,
+          2321
+        ],
+        "total": 2325
+      },
+      "usage": {
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 2321,
+        "inference_geo": "global",
+        "input_tokens": 4,
+        "output_tokens": 0,
+        "service_tier": "standard"
+      }
+    }
+  ]
+}

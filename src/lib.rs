@@ -29,6 +29,7 @@
 //! * [`settle`] — a stream becomes a finished message, or does not.
 //! * [`input_transformation`] — replayed input the API dropped before inference.
 //! * [`response`] — a non-streamed response body.
+//! * [`prompt_cache`] — what the prompt cache will read, write and bill.
 //! * [`usage`] — what a request cost, and what the cache did.
 //!
 //! # Shared
@@ -85,6 +86,7 @@ pub mod document;
 pub mod frame;
 pub mod input_transformation;
 pub mod model;
+pub mod prompt_cache;
 pub mod request;
 pub mod response;
 pub mod settle;

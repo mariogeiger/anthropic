@@ -39,6 +39,7 @@ Inbound:
 - `settle` — a stream becomes a finished message, or does not.
 - `response` — a non-streamed response body, and an error body.
 - `usage` — what a request cost, and what the cache did.
+- `prompt_cache` — what the cache will read, write and bill, predicted.
 
 Shared:
 
