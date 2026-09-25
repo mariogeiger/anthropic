@@ -108,3 +108,7 @@ is a measurement rather than a guess. Reading a rejection's exact wording is how
 the per-model differences in `model` were established.
 
 Never print, log, or commit a credential.
+
+The repository is public. Name no gateway: not its operator, its host, the
+platform behind it, or the model identifiers it routes. Write "a gateway" and
+`gateway/<model>`, in code, fixtures, documentation, and commit messages alike.
