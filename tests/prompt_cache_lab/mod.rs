@@ -13,7 +13,7 @@ use anthropic::CacheTtl;
 use anthropic::block::{ContentBlock, ImageSource, ToolResultContent};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::DocumentSource;
-use anthropic::prompt_cache::{PrefixTokens, PromptCache, PromptUsage};
+use anthropic::prompt_cache::{CacheKeys, PrefixTokens, PromptCache, PromptUsage};
 use anthropic::request::{Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Request};
 use anthropic::tool_choice::ToolChoice;
 use anthropic::usage::Usage;
@@ -403,7 +403,7 @@ pub fn replay(trace: &Value) -> Replay {
             tokens.at_breakpoints(),
             tokens.total()
         );
-        match cache.explain(&request, started_at, &tokens, &PromptUsage::from(&usage)) {
+        match cache.explain(&CacheKeys::of(&request), started_at, &tokens, &PromptUsage::from(&usage)) {
             Ok(served) if served.lost.is_empty() => {}
             Ok(served) => {
                 let lost: Vec<_> = served.lost.iter().map(|l| (l.position, l.tokens)).collect();

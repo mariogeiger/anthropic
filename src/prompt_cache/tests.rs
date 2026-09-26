@@ -5,6 +5,7 @@ use serde_json::json;
 use super::*;
 use crate::block::{ContentBlock, ImageSource};
 use crate::context::{CacheSlot, Context, Opening, Tool};
+use crate::request::Request;
 use crate::request::{Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Sonnet5, Sonnet5Effort};
 use crate::tool_choice::ToolChoice;
 
@@ -41,7 +42,7 @@ fn conversation() -> Context {
 #[test]
 fn a_cold_request_writes_every_breakpoint_and_bills_the_write_once() {
     let context = conversation();
-    let served = PromptCache::new().serve(&request(&context), T0, &tokens(&[600, 900], 904)).unwrap();
+    let served = PromptCache::new().serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 904)).unwrap();
     assert_eq!(served.read, None);
     assert_eq!(
         served.written.iter().map(|w| w.position).collect::<Vec<_>>(),
@@ -54,8 +55,8 @@ fn a_cold_request_writes_every_breakpoint_and_bills_the_write_once() {
 fn a_repeated_request_reads_the_longest_entry() {
     let context = conversation();
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &tokens(&[600, 900], 904)).unwrap();
-    let served = cache.serve(&request(&context), secs(10), &tokens(&[600, 900], 904)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 904)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&context)), secs(10), &tokens(&[600, 900], 904)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 0, block: 0 }));
     let stamped: Vec<_> = served.written.iter().map(|w| w.position).collect();
     assert_eq!(stamped, [Position::System(0), Position::Message { message: 0, block: 0 }]);
@@ -66,20 +67,20 @@ fn a_repeated_request_reads_the_longest_entry() {
 fn a_prefix_below_the_model_minimum_is_not_written() {
     let context = conversation();
     let mut cache = PromptCache::new();
-    let served = cache.serve(&request(&context), T0, &tokens(&[300, 600], 604)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[300, 600], 604)).unwrap();
     assert_eq!(
         served.written.iter().map(|w| w.position).collect::<Vec<_>>(),
         [Position::Message { message: 0, block: 0 }]
     );
     assert_eq!(served.usage, usage(4, 0, 600, 0));
-    let served = cache.serve(&request(&context), secs(1), &tokens(&[300, 600], 604)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&context)), secs(1), &tokens(&[300, 600], 604)).unwrap();
     assert_eq!(served.usage, usage(4, 600, 0, 0));
 }
 
 #[test]
 fn nothing_is_written_when_the_last_breakpoint_is_below_the_minimum() {
     let context = conversation();
-    let served = PromptCache::new().serve(&request(&context), T0, &tokens(&[200, 500], 504)).unwrap();
+    let served = PromptCache::new().serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[200, 500], 504)).unwrap();
     assert!(served.written.is_empty());
     assert_eq!(served.usage, usage(504, 0, 0, 0));
 }
@@ -89,10 +90,10 @@ fn an_entry_expires_its_ttl_after_the_start_of_its_last_use() {
     let context = conversation();
     let sizes = tokens(&[600, 900], 904);
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &sizes).unwrap();
-    assert!(cache.serve(&request(&context), secs(299), &sizes).unwrap().read.is_some());
-    assert!(cache.serve(&request(&context), secs(598), &sizes).unwrap().read.is_some());
-    let served = cache.serve(&request(&context), secs(898), &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &sizes).unwrap();
+    assert!(cache.serve(&CacheKeys::of(&request(&context)), secs(299), &sizes).unwrap().read.is_some());
+    assert!(cache.serve(&CacheKeys::of(&request(&context)), secs(598), &sizes).unwrap().read.is_some());
+    let served = cache.serve(&CacheKeys::of(&request(&context)), secs(898), &sizes).unwrap();
     assert_eq!(served.read, None);
     assert_eq!(served.usage, usage(4, 0, 900, 0));
 }
@@ -109,9 +110,9 @@ fn reading_an_entry_keeps_alive_what_its_writer_built_it_on() {
     other.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
 
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &sizes).unwrap();
-    cache.serve(&request(&unmarked), secs(200), &tokens(&[900], 904)).unwrap();
-    let served = cache.serve(&request(&other), secs(400), &tokens(&[600, 910], 914)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&request(&unmarked)), secs(200), &tokens(&[900], 904)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&other)), secs(400), &tokens(&[600, 910], 914)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::System(0)));
     assert_eq!(served.usage, usage(4, 600, 310, 0));
 }
@@ -123,12 +124,12 @@ fn an_entry_written_past_a_miss_keeps_nothing_before_it_alive() {
     far.push_user((0..30).map(|i| ContentBlock::text(format!("block {i}"))).collect());
     far.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     let mut cache = PromptCache::new();
-    cache.serve(&request(&anchor), T0, &tokens(&[600, 900], 904)).unwrap();
-    assert_eq!(cache.serve(&request(&far), secs(100), &tokens(&[1500], 1504)).unwrap().read, None);
-    assert!(cache.serve(&request(&far), secs(200), &tokens(&[1500], 1504)).unwrap().read.is_some());
+    cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600, 900], 904)).unwrap();
+    assert_eq!(cache.serve(&CacheKeys::of(&request(&far)), secs(100), &tokens(&[1500], 1504)).unwrap().read, None);
+    assert!(cache.serve(&CacheKeys::of(&request(&far)), secs(200), &tokens(&[1500], 1504)).unwrap().read.is_some());
     let mut other = Context::new(Opening::cached_instruction("system", CacheSlot::S0, CacheTtl::FiveMinutes));
     other.push_user_text("second");
-    assert_eq!(cache.serve(&request(&other), secs(400), &tokens(&[600], 610)).unwrap().read, None);
+    assert_eq!(cache.serve(&CacheKeys::of(&request(&other)), secs(400), &tokens(&[600], 610)).unwrap().read, None);
 }
 
 /// Breakpoints after `a` and after `c`, and optionally one more turn.
@@ -155,11 +156,12 @@ fn marked_once() -> Context {
 #[test]
 fn breakpoints_before_the_entry_read_place_their_entries_free() {
     let mut cache = PromptCache::new();
-    cache.serve(&request(&marked_twice(false)), T0, &tokens(&[400, 1000], 1004)).unwrap();
-    let served = cache.serve(&request(&marked_twice(true)), secs(1), &tokens(&[700, 1000], 1102)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&marked_twice(false))), T0, &tokens(&[400, 1000], 1004)).unwrap();
+    let served =
+        cache.serve(&CacheKeys::of(&request(&marked_twice(true))), secs(1), &tokens(&[700, 1000], 1102)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 2, block: 0 }));
     assert_eq!(served.usage, usage(102, 1000, 0, 0));
-    let served = cache.serve(&request(&marked_once()), secs(2), &tokens(&[700], 704)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&marked_once())), secs(2), &tokens(&[700], 704)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 0, block: 0 }));
     assert_eq!(served.usage, usage(4, 700, 0, 0));
 }
@@ -167,8 +169,8 @@ fn breakpoints_before_the_entry_read_place_their_entries_free() {
 #[test]
 fn a_prefix_no_breakpoint_placed_is_not_found() {
     let mut cache = PromptCache::new();
-    cache.serve(&request(&marked_twice(false)), T0, &tokens(&[400, 1000], 1004)).unwrap();
-    let served = cache.serve(&request(&marked_once()), secs(1), &tokens(&[700], 704)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&marked_twice(false))), T0, &tokens(&[400, 1000], 1004)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&marked_once())), secs(1), &tokens(&[700], 704)).unwrap();
     assert_eq!(served.read, None);
 }
 
@@ -188,8 +190,8 @@ fn the_lookback_window_holds_twenty_two_positions_counting_the_breakpoint() {
     anchor.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
     for (added, reached) in [(21, true), (22, false)] {
         let mut cache = PromptCache::new();
-        cache.serve(&request(&anchor), T0, &tokens(&[600], 604)).unwrap();
-        let served = cache.serve(&request(&with_blocks(added)), secs(1), &tokens(&[900], 904)).unwrap();
+        cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600], 604)).unwrap();
+        let served = cache.serve(&CacheKeys::of(&request(&with_blocks(added))), secs(1), &tokens(&[900], 904)).unwrap();
         assert_eq!(served.read.is_some(), reached, "{added} blocks after the entry");
     }
 }
@@ -216,8 +218,8 @@ fn a_run_of_tool_calls_counts_as_one_position() {
     };
     for (extra, reached) in [(false, true), (true, false)] {
         let mut cache = PromptCache::new();
-        cache.serve(&request(&anchor), T0, &tokens(&[600], 604)).unwrap();
-        let served = cache.serve(&request(&grown(extra)), secs(1), &tokens(&[900], 902)).unwrap();
+        cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600], 604)).unwrap();
+        let served = cache.serve(&CacheKeys::of(&request(&grown(extra))), secs(1), &tokens(&[900], 902)).unwrap();
         assert_eq!(served.read.is_some(), reached);
     }
 }
@@ -233,8 +235,8 @@ fn an_earlier_breakpoint_opens_its_own_window() {
     grown.push_assistant((0..40).map(|i| ContentBlock::text(format!("t{i}"))).collect());
     grown.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     let mut cache = PromptCache::new();
-    cache.serve(&request(&anchor), T0, &tokens(&[600], 604)).unwrap();
-    let served = cache.serve(&request(&grown), secs(1), &tokens(&[600, 1200], 1202)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600], 604)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&grown)), secs(1), &tokens(&[600, 1200], 1202)).unwrap();
     assert_eq!(served.read.map(|r| r.tokens), Some(600));
     assert_eq!(served.usage, usage(2, 600, 600, 0));
 }
@@ -244,11 +246,11 @@ fn one_hour_tokens_run_to_the_last_one_hour_breakpoint() {
     let mut context = Context::new(Opening::cached_instruction("system", CacheSlot::S0, CacheTtl::OneHour));
     context.push_user_text("first");
     context.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
-    let served = PromptCache::new().serve(&request(&context), T0, &tokens(&[600, 900], 904)).unwrap();
+    let served = PromptCache::new().serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 904)).unwrap();
     assert_eq!(served.usage, usage(4, 0, 300, 600));
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &tokens(&[600, 900], 904)).unwrap();
-    let served = cache.serve(&request(&context), secs(1000), &tokens(&[600, 900], 904)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 904)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&context)), secs(1000), &tokens(&[600, 900], 904)).unwrap();
     assert_eq!(served.read.map(|r| (r.position, r.ttl)), Some((Position::System(0), CacheTtl::OneHour)));
     assert_eq!(served.usage, usage(4, 600, 300, 0));
 }
@@ -264,11 +266,11 @@ fn only_forcing_a_tool_call_moves_the_messages() {
     let sizes = tokens(&[1100, 1400], 1404);
     let forced = tokens(&[1100, 1510], 1514);
     let read = |cache: &mut PromptCache, request: Request<'_>, at: u64, sizes: &PrefixTokens| {
-        cache.serve(&request, secs(at), sizes).unwrap().read.map(|r| r.tokens)
+        cache.serve(&CacheKeys::of(&request), secs(at), sizes).unwrap().read.map(|r| r.tokens)
     };
 
     let mut cache = PromptCache::new();
-    cache.serve(&sonnet(), T0, &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&sonnet()), T0, &sizes).unwrap();
     for (at, choice) in [(1, ToolChoice::none()), (2, ToolChoice::auto().without_parallel_use())] {
         assert_eq!(read(&mut cache, sonnet().with_tool_choice(choice).unwrap(), at, &sizes), Some(1400));
     }
@@ -285,8 +287,8 @@ fn an_image_moves_nothing_before_it() {
     pictured.push_assistant_text("ok");
     pictured.push_user(vec![ContentBlock::image(ImageSource::url("https://example.com/a.png"))]);
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &tokens(&[600, 900], 904)).unwrap();
-    let served = cache.serve(&request(&pictured), secs(1), &tokens(&[600, 900], 1500)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 904)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&pictured)), secs(1), &tokens(&[600, 900], 1500)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 0, block: 0 }));
 }
 
@@ -303,15 +305,15 @@ fn effort_renders_where_the_model_renders_it() {
     let mut cache = PromptCache::new();
     let low = Model::Opus5_5(Opus5_5 { effort: Opus5_5Effort::Low, ..Model::opus_5_5() });
     let high = Model::Opus5_5(Opus5_5 { effort: Opus5_5Effort::High, ..Model::opus_5_5() });
-    cache.serve(&Request::new(&context, low, 1).unwrap(), T0, &sizes).unwrap();
-    let served = cache.serve(&Request::new(&context, high, 1).unwrap(), secs(1), &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&Request::new(&context, low, 1).unwrap()), T0, &sizes).unwrap();
+    let served = cache.serve(&CacheKeys::of(&Request::new(&context, high, 1).unwrap()), secs(1), &sizes).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 0, block: 0 }));
 
     let mut cache = PromptCache::new();
     let low = Model::Sonnet5(Sonnet5 { effort: Sonnet5Effort::Low, ..Model::sonnet_5() });
     let high = Model::Sonnet5(Sonnet5 { effort: Sonnet5Effort::High, ..Model::sonnet_5() });
-    cache.serve(&Request::new(&context, low, 1).unwrap(), T0, &sizes).unwrap();
-    let served = cache.serve(&Request::new(&context, high, 1).unwrap(), secs(1), &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&Request::new(&context, low, 1).unwrap()), T0, &sizes).unwrap();
+    let served = cache.serve(&CacheKeys::of(&Request::new(&context, high, 1).unwrap()), secs(1), &sizes).unwrap();
     assert_eq!(served.read, None);
 }
 
@@ -322,8 +324,8 @@ fn thinking_display_is_not_rendered() {
     let summarized = Model::Opus5_5(Opus5_5 { display: Opus5_5ThinkingDisplay::Summarized, ..Model::opus_5_5() });
     let omitted = Model::Opus5_5(Opus5_5 { display: Opus5_5ThinkingDisplay::Omitted, ..Model::opus_5_5() });
     let mut cache = PromptCache::new();
-    cache.serve(&Request::new(&context, summarized, 1).unwrap(), T0, &sizes).unwrap();
-    let served = cache.serve(&Request::new(&context, omitted, 1).unwrap(), secs(1), &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&Request::new(&context, summarized, 1).unwrap()), T0, &sizes).unwrap();
+    let served = cache.serve(&CacheKeys::of(&Request::new(&context, omitted, 1).unwrap()), secs(1), &sizes).unwrap();
     assert_eq!(served.usage, usage(4, 900, 0, 0));
 }
 
@@ -332,8 +334,9 @@ fn another_model_shares_no_entry() {
     let context = conversation();
     let sizes = tokens(&[1100, 1400], 1404);
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &sizes).unwrap();
-    let served = cache.serve(&Request::new(&context, Model::sonnet_5(), 1).unwrap(), secs(1), &sizes).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &sizes).unwrap();
+    let served =
+        cache.serve(&CacheKeys::of(&Request::new(&context, Model::sonnet_5(), 1).unwrap()), secs(1), &sizes).unwrap();
     assert_eq!(served.read, None);
 }
 
@@ -348,8 +351,8 @@ fn a_deferred_tool_is_not_in_the_prompt() {
     deferring.push_user_text("first");
     deferring.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
     let mut cache = PromptCache::new();
-    cache.serve(&request(&plain), T0, &tokens(&[700], 704)).unwrap();
-    assert!(cache.serve(&request(&deferring), secs(1), &tokens(&[700], 704)).unwrap().read.is_some());
+    cache.serve(&CacheKeys::of(&request(&plain)), T0, &tokens(&[700], 704)).unwrap();
+    assert!(cache.serve(&CacheKeys::of(&request(&deferring)), secs(1), &tokens(&[700], 704)).unwrap().read.is_some());
 }
 
 #[test]
@@ -361,7 +364,7 @@ fn turn_scoped_text_leaves_the_prompt_after_the_next_user_message() {
     context.push_assistant_text("reply");
     context.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &tokens(&[600, 700], 702)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 700], 702)).unwrap();
     let mut later = Context::new(Opening::instruction("system"));
     later.push_user_text("first");
     later.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
@@ -369,7 +372,7 @@ fn turn_scoped_text_leaves_the_prompt_after_the_next_user_message() {
     later.push_assistant_text("reply");
     later.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     later.push_user_text("second");
-    let served = cache.serve(&request(&later), secs(1), &tokens(&[600, 690], 800)).unwrap();
+    let served = cache.serve(&CacheKeys::of(&request(&later)), secs(1), &tokens(&[600, 690], 800)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::Message { message: 0, block: 0 }));
 }
 
@@ -378,17 +381,25 @@ fn inconsistent_inputs_are_refused_without_changing_the_cache() {
     let context = conversation();
     let mut cache = PromptCache::new();
     assert_eq!(
-        cache.serve(&request(&context), T0, &tokens(&[600], 904)),
+        cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600], 904)),
         Err(ServeError::BreakpointCount { request: 2, supplied: 1 })
     );
-    assert_eq!(cache.serve(&request(&context), T0, &tokens(&[900, 600], 904)), Err(ServeError::Decreasing));
-    assert_eq!(cache.serve(&request(&context), T0, &tokens(&[600, 900], 800)), Err(ServeError::Decreasing));
-    cache.serve(&request(&context), secs(5), &tokens(&[600, 900], 904)).unwrap();
     assert_eq!(
-        cache.serve(&request(&context), secs(4), &tokens(&[600, 900], 904)),
+        cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[900, 600], 904)),
+        Err(ServeError::Decreasing)
+    );
+    assert_eq!(
+        cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 900], 800)),
+        Err(ServeError::Decreasing)
+    );
+    cache.serve(&CacheKeys::of(&request(&context)), secs(5), &tokens(&[600, 900], 904)).unwrap();
+    assert_eq!(
+        cache.serve(&CacheKeys::of(&request(&context)), secs(4), &tokens(&[600, 900], 904)),
         Err(ServeError::StartedBeforePrevious { previous: secs(5), started_at: secs(4) })
     );
-    assert!(cache.serve(&request(&context), secs(6), &tokens(&[600, 900], 904)).unwrap().read.is_some());
+    assert!(
+        cache.serve(&CacheKeys::of(&request(&context)), secs(6), &tokens(&[600, 900], 904)).unwrap().read.is_some()
+    );
 }
 
 #[test]
@@ -396,16 +407,16 @@ fn a_shortfall_is_attributed_to_the_entries_reached_before_the_one_read() {
     let context = conversation();
     let sizes = tokens(&[600, 900], 904);
     let mut cache = PromptCache::new();
-    cache.serve(&request(&context), T0, &sizes).unwrap();
-    let served = cache.explain(&request(&context), secs(1), &sizes, &usage(4, 600, 300, 0)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &sizes).unwrap();
+    let served = cache.explain(&CacheKeys::of(&request(&context)), secs(1), &sizes, &usage(4, 600, 300, 0)).unwrap();
     assert_eq!(served.read.map(|r| r.position), Some(Position::System(0)));
     assert_eq!(
         served.lost.iter().map(|l| l.position).collect::<Vec<_>>(),
         [Position::Message { message: 0, block: 0 }]
     );
-    let served = cache.explain(&request(&context), secs(2), &sizes, &usage(4, 0, 900, 0)).unwrap();
+    let served = cache.explain(&CacheKeys::of(&request(&context)), secs(2), &sizes, &usage(4, 0, 900, 0)).unwrap();
     assert_eq!(served.lost.len(), 2);
-    assert_eq!(cache.serve(&request(&context), secs(3), &sizes).unwrap().usage, usage(4, 900, 0, 0));
+    assert_eq!(cache.serve(&CacheKeys::of(&request(&context)), secs(3), &sizes).unwrap().usage, usage(4, 900, 0, 0));
 }
 
 #[test]
@@ -413,10 +424,55 @@ fn a_usage_no_loss_explains_is_refused_without_changing_the_cache() {
     let context = conversation();
     let sizes = tokens(&[600, 900], 904);
     let mut cache = PromptCache::new();
-    let more = cache.explain(&request(&context), T0, &sizes, &usage(4, 600, 300, 0));
+    let more = cache.explain(&CacheKeys::of(&request(&context)), T0, &sizes, &usage(4, 600, 300, 0));
     assert_eq!(more, Err(ServeError::Unexplained { predicted: usage(4, 0, 900, 0), observed: usage(4, 600, 300, 0) }));
-    cache.serve(&request(&context), T0, &sizes).unwrap();
-    let billed = cache.explain(&request(&context), secs(1), &sizes, &usage(4, 900, 1, 0));
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &sizes).unwrap();
+    let billed = cache.explain(&CacheKeys::of(&request(&context)), secs(1), &sizes, &usage(4, 900, 1, 0));
     assert!(matches!(billed, Err(ServeError::Unexplained { .. })));
-    assert_eq!(cache.serve(&request(&context), secs(2), &sizes).unwrap().usage, usage(4, 900, 0, 0));
+    assert_eq!(cache.serve(&CacheKeys::of(&request(&context)), secs(2), &sizes).unwrap().usage, usage(4, 900, 0, 0));
+}
+
+#[test]
+fn keys_survive_serialization_and_serve_as_the_request_does() {
+    let keys = CacheKeys::of(&request(&conversation()));
+    let restored: CacheKeys = serde_json::from_str(&serde_json::to_string(&keys).unwrap()).unwrap();
+    assert_eq!(restored, keys);
+    let sizes = tokens(&[600, 900], 904);
+    let mut cache = PromptCache::new();
+    cache.serve(&keys, T0, &sizes).unwrap();
+    assert_eq!(cache.serve(&restored, secs(1), &sizes).unwrap().usage, usage(4, 900, 0, 0));
+}
+
+#[test]
+fn other_ttls_replay_the_same_requests_under_another_policy() {
+    let sent = CacheKeys::of(&request(&conversation()));
+    assert_eq!(sent.ttls(), [CacheTtl::FiveMinutes; 2]);
+    let hour = sent.with_ttls(&[CacheTtl::OneHour; 2]).unwrap();
+    let sizes = tokens(&[600, 900], 904);
+    let replay = |keys: &CacheKeys| {
+        let mut cache = PromptCache::new();
+        let first = cache.serve(keys, T0, &sizes).unwrap().usage;
+        (first, cache.serve(keys, secs(10 * 60), &sizes).unwrap().usage)
+    };
+    assert_eq!(replay(&sent), (usage(4, 0, 900, 0), usage(4, 0, 900, 0)));
+    assert_eq!(replay(&hour), (usage(4, 0, 0, 900), usage(4, 900, 0, 0)));
+}
+
+#[test]
+fn ttls_are_one_per_breakpoint_with_every_hour_first() {
+    let keys = CacheKeys::of(&request(&conversation()));
+    assert_eq!(keys.with_ttls(&[CacheTtl::OneHour]), Err(TtlsError::Count { breakpoints: 2, supplied: 1 }));
+    assert_eq!(keys.with_ttls(&[CacheTtl::FiveMinutes, CacheTtl::OneHour]), Err(TtlsError::OneHourAfterFiveMinutes));
+    let mixed = keys.with_ttls(&[CacheTtl::OneHour, CacheTtl::FiveMinutes]).unwrap();
+    assert_eq!(mixed.ttls(), [CacheTtl::OneHour, CacheTtl::FiveMinutes]);
+}
+
+#[test]
+fn keys_keep_only_the_positions_a_lookback_reaches() {
+    let mut context = Context::new(Opening::instruction("system"));
+    context.push_user((0..60).map(|i| ContentBlock::text(format!("b{i}"))).collect());
+    context.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+    let keys = CacheKeys::of(&request(&context));
+    assert_eq!(keys.cuts.len(), LOOKBACK_POSITIONS);
+    assert_eq!(keys.cuts[0].position, Position::Message { message: 0, block: 60 - LOOKBACK_POSITIONS });
 }

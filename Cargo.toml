@@ -1,6 +1,6 @@
 [package]
 name = "anthropic"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/mariogeiger/anthropic"
@@ -8,6 +8,7 @@ repository = "https://github.com/mariogeiger/anthropic"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 # Live-API integration tests only (tests/live_api.rs). The crate itself stays

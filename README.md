@@ -112,22 +112,30 @@ println!("{} tokens read from cache", response.usage.cache_read_input_tokens);
 
 `PromptCache` replays the server's caching rules on a sequence of requests and
 says, for each, which entry it reads, which it writes, and what `usage` will
-report. You supply when each request started and how many tokens each
+report. A request enters as its `CacheKeys`: each position a lookback reaches,
+keyed by a digest of the prefix, so it can be recorded as it is sent and
+replayed later. You supply when each request started and how many tokens each
 breakpoint's prefix holds; the crate cannot tokenize.
 
 ```rust
 use std::time::Duration;
-use anthropic::prompt_cache::{PrefixTokens, PromptCache, PromptUsage};
+use anthropic::CacheTtl;
+use anthropic::prompt_cache::{CacheKeys, PrefixTokens, PromptCache, PromptUsage};
 
 let mut cache = PromptCache::new();
 let tokens = PrefixTokens::new(vec![1869, 2556], 2560);
-let predicted = cache.serve(&request, Duration::ZERO, &tokens)?;
-let observed = cache.explain(&next, Duration::from_secs(5), &tokens, &PromptUsage::from(&response.usage))?;
+let predicted = cache.serve(&CacheKeys::of(&request), Duration::ZERO, &tokens)?;
+let observed = cache.explain(&CacheKeys::of(&next), Duration::from_secs(5), &tokens, &PromptUsage::from(&response.usage))?;
 println!("predicted {:?}; the server had lost {:?}", predicted.usage, observed.lost);
+
+// The same request, as if every breakpoint had been written for an hour.
+let hourly = CacheKeys::of(&request).with_ttls(&[CacheTtl::OneHour; 2])?;
 ```
 
 `serve` predicts; `explain` takes the usage the server reported and accounts
-for entries it lost, which the first-party cache does, unpredictably. The rules
+for entries it lost, which the first-party cache does, unpredictably.
+`with_ttls` replays recorded keys under other TTLs, which is how a recorded
+sequence answers what another caching policy would have cost. The rules
 were measured against the first-party API, and where they differ from the
 documentation the module says so. `tests/captured/prompt_cache/`
 holds the recorded traces the prediction is checked against.

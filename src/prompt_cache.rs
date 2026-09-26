@@ -7,7 +7,9 @@
 //! requests and says, for each, which entry it reads, which it writes, and the
 //! token counts `usage` will report. It has no clock and no network: the caller
 //! says when each request started and how many tokens each breakpoint's prefix
-//! holds, so the same inputs always give the same prediction.
+//! holds, so the same inputs always give the same prediction. A request enters
+//! as its [`CacheKeys`], which can be recorded when it is sent and replayed
+//! later, under the TTLs sent or under others.
 //!
 //! # The rules
 //!
@@ -59,14 +61,18 @@
 //!
 //! [`ModelId::min_cacheable_prefix_tokens`]: crate::model::ModelId::min_cacheable_prefix_tokens
 
+mod keys;
 mod render;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+
 use crate::CacheTtl;
-use crate::request::Request;
 use crate::usage::{CacheCreation, Usage};
+pub use keys::{CacheKeys, TtlsError};
+use keys::{Cut, Digest};
 
 /// How many positions a breakpoint's lookback checks, itself included.
 ///
@@ -80,7 +86,7 @@ pub const LOOKBACK_POSITIONS: usize = 22;
 ///
 /// Indices rather than content because a prediction is read beside the request
 /// it was made for, and an index is what locates a block there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Position {
     /// `tools[i]`.
     Tool(usize),
@@ -239,7 +245,7 @@ impl std::error::Error for ServeError {}
 struct Storage {
     parent: Option<u64>,
     /// Byte length of the prefix this stretch computes up to.
-    end: usize,
+    end: u64,
     ttl: CacheTtl,
     expires_at: Duration,
 }
@@ -252,12 +258,12 @@ struct Entry {
 
 /// The server's cache entries, as a sequence of requests leaves them.
 ///
-/// Keyed by the exact rendered prefix, so an entry is found only by a request
-/// whose prompt agrees with the writer's up to that position — which is the
-/// whole of the server's invalidation rule.
+/// Keyed by the digest of the exact rendered prefix, so an entry is found only
+/// by a request whose prompt agrees with the writer's up to that position —
+/// which is the whole of the server's invalidation rule.
 #[derive(Debug, Default)]
 pub struct PromptCache {
-    entries: HashMap<Vec<u8>, Entry>,
+    entries: HashMap<Digest, Entry>,
     storage: BTreeMap<u64, Storage>,
     next_storage: u64,
     last_start: Option<Duration>,
@@ -272,7 +278,7 @@ fn lifetime(ttl: CacheTtl) -> Duration {
 
 /// A request as the cache meets it.
 struct Arrival<'a> {
-    rendering: render::Rendering,
+    cuts: &'a [Cut],
     /// Cut indices of its breakpoints, in prompt order.
     marks: Vec<usize>,
     tokens: &'a PrefixTokens,
@@ -295,16 +301,16 @@ impl PromptCache {
         Self::default()
     }
 
-    /// Serve `request`, started at `started_at` on the caller's clock, whose
-    /// prefixes hold `tokens`, and return what it reads, writes and will report
-    /// if the server has lost nothing.
+    /// Serve the request keyed by `keys`, started at `started_at` on the
+    /// caller's clock, whose prefixes hold `tokens`, and return what it reads,
+    /// writes and will report if the server has lost nothing.
     pub fn serve(
         &mut self,
-        request: &Request<'_>,
+        keys: &CacheKeys,
         started_at: Duration,
         tokens: &PrefixTokens,
     ) -> Result<Served, ServeError> {
-        self.serve_reading(request, started_at, tokens, None)
+        self.serve_reading(keys, started_at, tokens, None)
     }
 
     /// Serve `request` as [`serve`](Self::serve) does, given the usage the
@@ -319,17 +325,17 @@ impl PromptCache {
     /// produce is [`ServeError::Unexplained`].
     pub fn explain(
         &mut self,
-        request: &Request<'_>,
+        keys: &CacheKeys,
         started_at: Duration,
         tokens: &PrefixTokens,
         observed: &PromptUsage,
     ) -> Result<Served, ServeError> {
-        self.serve_reading(request, started_at, tokens, Some(observed))
+        self.serve_reading(keys, started_at, tokens, Some(observed))
     }
 
     fn serve_reading(
         &mut self,
-        request: &Request<'_>,
+        keys: &CacheKeys,
         started_at: Duration,
         tokens: &PrefixTokens,
         observed: Option<&PromptUsage>,
@@ -339,8 +345,8 @@ impl PromptCache {
         {
             return Err(ServeError::StartedBeforePrevious { previous, started_at });
         }
-        let rendering = render::render(request);
-        let marks: Vec<usize> = (0..rendering.cuts.len()).filter(|&i| rendering.cuts[i].mark.is_some()).collect();
+        let cuts = keys.cuts.as_slice();
+        let marks: Vec<usize> = (0..cuts.len()).filter(|&i| cuts[i].mark.is_some()).collect();
         if marks.len() != tokens.at_breakpoints.len() {
             return Err(ServeError::BreakpointCount { request: marks.len(), supplied: tokens.at_breakpoints.len() });
         }
@@ -350,11 +356,9 @@ impl PromptCache {
             return Err(ServeError::Decreasing);
         }
 
-        let minimum = u64::from(request.model().id().min_cacheable_prefix_tokens());
-        let arrival = Arrival { rendering, marks, tokens, minimum, now: started_at };
-        let rendering = &arrival.rendering;
+        let arrival = Arrival { cuts, marks, tokens, minimum: keys.minimum, now: started_at };
         let reachable = self.reachable(&arrival);
-        let entry_at = |cut: usize| self.entries[rendering.prefix(&rendering.cuts[cut])];
+        let entry_at = |cut: usize| self.entries[&cuts[cut].digest];
         let kept = match observed {
             None => 0,
             Some(observed) => match observed.cache_read_input_tokens {
@@ -381,18 +385,14 @@ impl PromptCache {
             .iter()
             .map(|&cut| {
                 let entry = entry_at(cut);
-                Touched {
-                    position: rendering.cuts[cut].position,
-                    tokens: entry.tokens,
-                    ttl: self.storage[&entry.storage].ttl,
-                }
+                Touched { position: cuts[cut].position, tokens: entry.tokens, ttl: self.storage[&entry.storage].ttl }
             })
             .collect();
         for &cut in &reachable[..kept] {
-            self.entries.remove(rendering.prefix(&rendering.cuts[cut]));
+            self.entries.remove(&cuts[cut].digest);
         }
         self.expire(started_at);
-        let read_storage = hit.map(|cut| self.entries[rendering.prefix(&rendering.cuts[cut])].storage);
+        let read_storage = hit.map(|cut| self.entries[&cuts[cut].digest].storage);
         let mut line = read_storage;
         while let Some(id) = line {
             let storage = self.storage.get_mut(&id).expect("live storage has live ancestors");
@@ -402,7 +402,7 @@ impl PromptCache {
         let mut parent = read_storage;
         let mut written = Vec::new();
         for (mark, size, placement) in placements {
-            let cut = &rendering.cuts[mark];
+            let cut = &cuts[mark];
             let storage = match placement {
                 Placement::Stamped(storage) => storage,
                 Placement::Written(ttl) => {
@@ -414,7 +414,7 @@ impl PromptCache {
                     id
                 }
             };
-            self.entries.insert(rendering.prefix(cut).to_vec(), Entry { tokens: size, storage });
+            self.entries.insert(cut.digest, Entry { tokens: size, storage });
             written.push(Touched { position: cut.position, tokens: size, ttl: self.storage[&storage].ttl });
         }
         Ok(Served { read: served_read, written, lost, usage })
@@ -429,10 +429,10 @@ impl PromptCache {
         hit: Option<usize>,
         lost: &[usize],
     ) -> (Vec<(usize, u64, Placement)>, Option<Touched>, PromptUsage) {
-        let Arrival { rendering, marks, tokens, minimum, now } = arrival;
-        let hit_entry = hit.map(|cut| self.entries[rendering.prefix(&rendering.cuts[cut])]);
+        let Arrival { cuts, marks, tokens, minimum, now } = arrival;
+        let hit_entry = hit.map(|cut| self.entries[&cuts[cut].digest]);
         let read = hit.zip(hit_entry).map(|(cut, entry)| Touched {
-            position: rendering.cuts[cut].position,
+            position: cuts[cut].position,
             tokens: entry.tokens,
             ttl: self.storage[&entry.storage].ttl,
         });
@@ -442,13 +442,12 @@ impl PromptCache {
             if size < *minimum {
                 continue;
             }
-            let cut = &rendering.cuts[mark];
+            let cut = &cuts[mark];
             let placement = match hit_entry {
                 Some(entry) if hit.is_some_and(|hit| mark <= hit) => {
-                    let prefix = rendering.prefix(cut);
                     let kept =
-                        self.entries.get(prefix).filter(|e| !lost.contains(&mark) && self.alive(e.storage, *now));
-                    Placement::Stamped(kept.map_or_else(|| self.covering(entry.storage, prefix.len()), |e| e.storage))
+                        self.entries.get(&cut.digest).filter(|e| !lost.contains(&mark) && self.alive(e.storage, *now));
+                    Placement::Stamped(kept.map_or_else(|| self.covering(entry.storage, cut.end), |e| e.storage))
                 }
                 _ => {
                     let ttl = cut.mark.expect("a mark");
@@ -491,16 +490,13 @@ impl PromptCache {
     /// Every live entry the lookback reaches, as cut indices in the order it
     /// reaches them: from each breakpoint, last first, nearest first.
     fn reachable(&self, arrival: &Arrival<'_>) -> Vec<usize> {
-        let Arrival { rendering, marks, now, .. } = arrival;
+        let Arrival { cuts, marks, now, .. } = arrival;
         let mut reachable = Vec::new();
         for &mark in marks.iter().rev() {
-            let first_unit = rendering.cuts[mark].unit;
-            let window = (0..=mark).rev().take_while(|&cut| first_unit - rendering.cuts[cut].unit < LOOKBACK_POSITIONS);
+            let first_unit = cuts[mark].unit;
+            let window = (0..=mark).rev().take_while(|&cut| first_unit - cuts[cut].unit < LOOKBACK_POSITIONS);
             for cut in window {
-                let live = self
-                    .entries
-                    .get(rendering.prefix(&rendering.cuts[cut]))
-                    .is_some_and(|entry| self.alive(entry.storage, *now));
+                let live = self.entries.get(&cuts[cut].digest).is_some_and(|entry| self.alive(entry.storage, *now));
                 if live && !reachable.contains(&cut) {
                     reachable.push(cut);
                 }
@@ -523,7 +519,7 @@ impl PromptCache {
 
     /// The stretch on `line` that computes the byte `end`: the shortest one
     /// reaching it.
-    fn covering(&self, line: u64, end: usize) -> u64 {
+    fn covering(&self, line: u64, end: u64) -> u64 {
         let mut covering = line;
         let mut next = self.storage[&line].parent;
         while let Some(id) = next {

@@ -1,15 +1,19 @@
 //! A request becomes the prompt the server caches: one byte string in server
-//! order, cut at every position a cache entry can end.
+//! order, cut at every position a cache entry can end, each cut keyed by the
+//! SHA-256 digest of the bytes before it.
 //!
 //! The bytes are the crate's own serialization, so two requests share a prefix
-//! exactly when the crate would send the same content for it. What the server
+//! exactly when the crate would send the same content for it. Only the digests
+//! are kept: a prefix is compared, never read back, and a digest is a key of
+//! fixed size where the bytes would grow with the conversation. What the server
 //! renders but the body does not spell out in place — the model, the toggles
 //! that move a whole level, and the thinking configuration where a
 //! model renders it — enters as a header piece that is not itself a position.
 
 use serde_json::{Map, Value, json};
+use sha2::{Digest as _, Sha256};
 
-use super::Position;
+use super::{Cut, Digest, Position};
 use crate::CacheTtl;
 use crate::model::ModelId;
 use crate::request::Request;
@@ -41,31 +45,6 @@ fn configuration_level(model: ModelId) -> ConfigurationLevel {
     }
 }
 
-/// One position of the rendered prompt.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct Cut {
-    pub(super) position: Position,
-    /// The prefix ending at this position is `bytes[..end]`.
-    pub(super) end: usize,
-    /// Positions sharing a unit count once against the lookback window.
-    pub(super) unit: usize,
-    /// The breakpoint placed here, if any.
-    pub(super) mark: Option<CacheTtl>,
-}
-
-/// The rendered prompt and its positions, in server order.
-#[derive(Debug)]
-pub(super) struct Rendering {
-    pub(super) bytes: Vec<u8>,
-    pub(super) cuts: Vec<Cut>,
-}
-
-impl Rendering {
-    pub(super) fn prefix(&self, cut: &Cut) -> &[u8] {
-        &self.bytes[..cut.end]
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Run {
     ToolUse,
@@ -73,13 +52,21 @@ enum Run {
 }
 
 struct Renderer {
-    rendering: Rendering,
+    hasher: Sha256,
+    length: u64,
+    cuts: Vec<Cut>,
     run: Option<Run>,
 }
 
 impl Renderer {
+    fn extend(&mut self, piece: &Value) {
+        let bytes = piece.to_string().into_bytes();
+        self.hasher.update(&bytes);
+        self.length += bytes.len() as u64;
+    }
+
     fn header(&mut self, piece: Value) {
-        self.rendering.bytes.extend(piece.to_string().into_bytes());
+        self.extend(&piece);
         self.run = None;
     }
 
@@ -93,21 +80,23 @@ impl Renderer {
             _ => None,
         };
         let continues = run.is_some() && run == self.run;
-        let unit = match self.rendering.cuts.last() {
+        let unit = match self.cuts.last() {
             Some(last) if continues => last.unit,
             Some(last) => last.unit + 1,
             None => 0,
         };
-        self.rendering.bytes.extend(block.to_string().into_bytes());
-        self.rendering.cuts.push(Cut { position, end: self.rendering.bytes.len(), unit, mark });
+        self.extend(&block);
+        let digest = Digest(self.hasher.clone().finalize().into());
+        self.cuts.push(Cut { position, end: self.length, unit, mark, digest });
         self.run = run;
     }
 }
 
-/// Render `request` as the server's cache sees it.
-pub(super) fn render(request: &Request<'_>) -> Rendering {
+/// Render `request` as the server's cache sees it: every position, in server
+/// order.
+pub(super) fn render(request: &Request<'_>) -> Vec<Cut> {
     let body = serde_json::to_value(request).expect("a request serializes to JSON");
-    let mut renderer = Renderer { rendering: Rendering { bytes: Vec::new(), cuts: Vec::new() }, run: None };
+    let mut renderer = Renderer { hasher: Sha256::new(), length: 0, cuts: Vec::new(), run: None };
     let level = configuration_level(request.model().id());
     let configuration = configuration(&body);
     let at = |wanted: ConfigurationLevel| if level == wanted { configuration.clone() } else { Value::Null };
@@ -157,7 +146,7 @@ pub(super) fn render(request: &Request<'_>) -> Rendering {
             _ => {}
         }
     }
-    renderer.rendering
+    renderer.cuts
 }
 
 fn array(value: &Value) -> &[Value] {

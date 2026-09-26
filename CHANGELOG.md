@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.12.0
+
+- `prompt_cache::CacheKeys` is a request as the prompt cache meets it: every
+  position a breakpoint's lookback reaches, keyed by the SHA-256 digest of the
+  prefix ending there, with the breakpoints' TTLs and the model's smallest
+  cacheable prefix. It serializes, so a caller can record it as each request is
+  sent and replay the sequence later without the requests, at a size that does
+  not grow with the conversation.
+- `CacheKeys::with_ttls` gives the same keys under other TTLs, one per
+  breakpoint, refusing a 1-hour breakpoint after a 5-minute one with
+  `TtlsError`. A TTL renders nowhere in the prefix, so replaying recorded keys
+  this way answers what another caching policy would have cost.
+- `PromptCache` keys its entries by digest rather than by the whole rendered
+  prefix, so its memory no longer grows with each entry's prompt.
+
+### Breaking: `PromptCache` serves `CacheKeys`
+
+`PromptCache::serve` and `PromptCache::explain` take `&CacheKeys` where they
+took `&Request`.
+
+**Migration.** Wrap the request argument:
+
+```text
+cache.serve(&request, started_at, &tokens)
+→ cache.serve(&CacheKeys::of(&request), started_at, &tokens)
+
+cache.explain(&request, started_at, &tokens, &observed)
+→ cache.explain(&CacheKeys::of(&request), started_at, &tokens, &observed)
+```
+
 ## 0.11.0
 
 - `prompt_cache` predicts what the server's prompt cache does with a sequence
