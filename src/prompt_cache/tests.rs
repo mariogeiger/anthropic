@@ -476,3 +476,16 @@ fn keys_keep_only_the_positions_a_lookback_reaches() {
     assert_eq!(keys.cuts.len(), LOOKBACK_POSITIONS);
     assert_eq!(keys.cuts[0].position, Position::Message { message: 0, block: 60 - LOOKBACK_POSITIONS });
 }
+
+#[test]
+fn peeking_names_the_entry_serving_would_read_and_changes_nothing() {
+    let keys = CacheKeys::of(&request(&conversation()));
+    let sizes = tokens(&[600, 900], 904);
+    let mut cache = PromptCache::new();
+    assert_eq!(cache.peek(&keys, T0), None);
+    cache.serve(&keys, T0, &sizes).unwrap();
+    let peeked = cache.peek(&keys, secs(60)).unwrap();
+    assert_eq!((peeked.position, peeked.tokens), (Position::Message { message: 0, block: 0 }, 900));
+    assert_eq!(cache.peek(&keys, secs(10 * 60)), None);
+    assert_eq!(cache.serve(&keys, secs(60), &sizes).unwrap().read, Some(peeked));
+}

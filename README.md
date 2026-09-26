@@ -135,7 +135,8 @@ let hourly = CacheKeys::of(&request).with_ttls(&[CacheTtl::OneHour; 2])?;
 `serve` predicts; `explain` takes the usage the server reported and accounts
 for entries it lost, which the first-party cache does, unpredictably.
 `with_ttls` replays recorded keys under other TTLs, which is how a recorded
-sequence answers what another caching policy would have cost. The rules
+sequence answers what another caching policy would have cost. `peek` names the
+entry a request would read without serving it. The rules
 were measured against the first-party API, and where they differ from the
 documentation the module says so. `tests/captured/prompt_cache/`
 holds the recorded traces the prediction is checked against.

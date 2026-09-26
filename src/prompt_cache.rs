@@ -333,6 +333,21 @@ impl PromptCache {
         self.serve_reading(keys, started_at, tokens, Some(observed))
     }
 
+    /// The entry the request keyed by `keys`, started at `started_at`, would
+    /// read if the server has lost nothing, without serving it.
+    ///
+    /// Exists because what a request reads is decided before any token count
+    /// matters, and a caller that knows only what `usage` reports — the entry
+    /// read and the last breakpoint — can bound an earlier breakpoint's count by
+    /// the entry it would read.
+    pub fn peek(&self, keys: &CacheKeys, started_at: Duration) -> Option<Touched> {
+        let cuts = keys.cuts.as_slice();
+        let marks: Vec<usize> = (0..cuts.len()).filter(|&i| cuts[i].mark.is_some()).collect();
+        let hit = *self.reachable(cuts, &marks, started_at).first()?;
+        let entry = self.entries[&cuts[hit].digest];
+        Some(Touched { position: cuts[hit].position, tokens: entry.tokens, ttl: self.storage[&entry.storage].ttl })
+    }
+
     fn serve_reading(
         &mut self,
         keys: &CacheKeys,
@@ -357,7 +372,7 @@ impl PromptCache {
         }
 
         let arrival = Arrival { cuts, marks, tokens, minimum: keys.minimum, now: started_at };
-        let reachable = self.reachable(&arrival);
+        let reachable = self.reachable(cuts, &arrival.marks, started_at);
         let entry_at = |cut: usize| self.entries[&cuts[cut].digest];
         let kept = match observed {
             None => 0,
@@ -489,14 +504,13 @@ impl PromptCache {
 
     /// Every live entry the lookback reaches, as cut indices in the order it
     /// reaches them: from each breakpoint, last first, nearest first.
-    fn reachable(&self, arrival: &Arrival<'_>) -> Vec<usize> {
-        let Arrival { cuts, marks, now, .. } = arrival;
+    fn reachable(&self, cuts: &[Cut], marks: &[usize], now: Duration) -> Vec<usize> {
         let mut reachable = Vec::new();
         for &mark in marks.iter().rev() {
             let first_unit = cuts[mark].unit;
             let window = (0..=mark).rev().take_while(|&cut| first_unit - cuts[cut].unit < LOOKBACK_POSITIONS);
             for cut in window {
-                let live = self.entries.get(&cuts[cut].digest).is_some_and(|entry| self.alive(entry.storage, *now));
+                let live = self.entries.get(&cuts[cut].digest).is_some_and(|entry| self.alive(entry.storage, now));
                 if live && !reachable.contains(&cut) {
                     reachable.push(cut);
                 }

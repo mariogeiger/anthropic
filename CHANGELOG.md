@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.0
+
+- `PromptCache::peek` names the entry a request would read without serving
+  it. What a request reads is decided before any token count matters, so a
+  caller that knows only what `usage` reports — the entry read and the last
+  breakpoint — can bound an earlier breakpoint's count by it.
+
 ## 0.12.0
 
 - `prompt_cache::CacheKeys` is a request as the prompt cache meets it: every
