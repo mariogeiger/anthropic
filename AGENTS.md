@@ -30,6 +30,12 @@ Outbound:
 - `model` — one type per model, plus the documented per-model constants.
 - `request` — per-call parameters and the two request bodies.
 - `tool_choice` — whether, and which, tool the model must call.
+- `tool` — the `tools` array: custom tools and server tools in one list.
+
+Both directions:
+
+- `web_search` — the web search server tool, and the results a search leaves in
+  the model's turn for the next request to replay.
 
 Inbound:
 

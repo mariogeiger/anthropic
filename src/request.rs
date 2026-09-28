@@ -18,7 +18,7 @@
 //! `tool_choice`, whose absence must stay byte-identical to a request that never
 //! mentioned it or the message cache key moves.
 
-use crate::context::{Context, Message, SystemPrompt, Tool};
+use crate::context::{Context, Message, SystemPrompt, ToolDefinition};
 use crate::system::PerMessageEffort;
 use crate::tool_choice::ToolChoice;
 use crate::values::{BetaFeature, OutputFormatType, ServiceTier, ThinkingType};
@@ -345,7 +345,7 @@ impl<'a> Request<'a> {
             return Err(RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort });
         }
         let tools = context.tools();
-        if !tools.is_empty() && tools.iter().all(|tool| tool.defer_loading) {
+        if !tools.is_empty() && tools.iter().all(ToolDefinition::is_deferred) {
             return Err(RequestError::EveryToolDeferred { tools: tools.len() });
         }
         if let Model::Haiku4_5(h) = &model
@@ -669,7 +669,7 @@ struct RequestWire<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a SystemPrompt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: &'a Vec<Tool>,
+    tools: &'a Vec<ToolDefinition>,
     messages: &'a Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<OutputConfig<'a>>,
@@ -789,7 +789,7 @@ struct CountRequestWire<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a SystemPrompt>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: &'a Vec<Tool>,
+    tools: &'a Vec<ToolDefinition>,
     messages: &'a Vec<Message>,
 }
 

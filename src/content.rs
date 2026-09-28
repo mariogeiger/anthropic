@@ -19,10 +19,10 @@
 //!
 //! # Unrecognized kinds are not failures
 //!
-//! Server tools introduce block kinds (`server_tool_use`,
-//! `web_search_tool_result`) that a caller using only its own tools never sees,
-//! and Anthropic adds more over time. So both blocks and deltas have an
-//! `Unmodeled` variant, for the same reason
+//! Server tools introduce block kinds that a caller using only its own tools
+//! never sees, and Anthropic adds more over time. Web search's two are modeled
+//! ([`StreamedBlock::ServerToolUse`], [`StreamedBlock::WebSearchToolResult`]);
+//! the rest are not yet. So both blocks and deltas have an `Unmodeled` variant, for the same reason
 //! [`crate::stream::StreamEvent::Unmodeled`] exists: a well-formed thing this
 //! crate does not know is not a broken frame.
 
@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use crate::document::Citation;
 use crate::frame::{FrameError, optional_string, require, require_str};
+use crate::web_search::WebSearchOutcome;
 
 /// A `citations` array as either direction carries it.
 ///
@@ -184,8 +185,30 @@ pub enum StreamedBlock {
         /// The input, undecoded. See [`ToolInput`].
         input: ToolInput,
     },
-    /// A block kind this crate does not model — a server tool call, its result,
-    /// or anything Anthropic adds later.
+    /// A call to a tool the API runs itself, grown by `input_json_delta` exactly
+    /// as [`Self::ToolUse`] is.
+    ///
+    /// The caller answers nothing: the API runs it and appends the result block
+    /// to the same turn. Both are replayed on the next request.
+    ServerToolUse {
+        /// The identifier the result block repeats as its `tool_use_id`.
+        id: String,
+        /// Which server tool ran, such as
+        /// [`crate::web_search::WEB_SEARCH_NAME`].
+        name: String,
+        /// The input, undecoded — a web search's is `{"query": …}`.
+        input: ToolInput,
+    },
+    /// What one web search returned. Arrives whole in its `content_block_start`;
+    /// no delta grows it.
+    WebSearchToolResult {
+        /// The [`Self::ServerToolUse`] this answers.
+        tool_use_id: String,
+        /// The pages found, or why the search failed.
+        content: WebSearchOutcome,
+    },
+    /// A block kind this crate does not model — another server tool's call or
+    /// result, or anything Anthropic adds later.
     ///
     /// Never an error, for the reason given in the module documentation. Its
     /// `kind` is worth logging once.
@@ -205,6 +228,8 @@ impl StreamedBlock {
             StreamedBlock::Thinking { .. } => "thinking",
             StreamedBlock::RedactedThinking { .. } => "redacted_thinking",
             StreamedBlock::ToolUse { .. } => "tool_use",
+            StreamedBlock::ServerToolUse { .. } => "server_tool_use",
+            StreamedBlock::WebSearchToolResult { .. } => "web_search_tool_result",
             StreamedBlock::Unmodeled { kind, .. } => kind,
         }
     }
@@ -243,6 +268,18 @@ impl StreamedBlock {
                 name: require_str(block, "name")?.to_owned(),
                 input: ToolInput::from_json(block.get("input")),
             },
+            "server_tool_use" => StreamedBlock::ServerToolUse {
+                id: require_str(block, "id")?.to_owned(),
+                name: require_str(block, "name")?.to_owned(),
+                input: ToolInput::from_json(block.get("input")),
+            },
+            "web_search_tool_result" => match WebSearchOutcome::decode(require(block, "content")?)? {
+                Ok(content) => StreamedBlock::WebSearchToolResult {
+                    tool_use_id: require_str(block, "tool_use_id")?.to_owned(),
+                    content,
+                },
+                Err(_) => StreamedBlock::Unmodeled { kind: "web_search_tool_result".to_owned(), value: block.clone() },
+            },
             other => StreamedBlock::Unmodeled { kind: other.to_owned(), value: block.clone() },
         })
     }
@@ -261,7 +298,10 @@ impl StreamedBlock {
             }
             (StreamedBlock::Thinking { thinking, .. }, BlockDelta::Thinking { delta }) => thinking.push_str(delta),
             (StreamedBlock::Thinking { signature, .. }, BlockDelta::Signature { delta }) => signature.push_str(delta),
-            (StreamedBlock::ToolUse { input, .. }, BlockDelta::InputJson { partial_json }) => {
+            (
+                StreamedBlock::ToolUse { input, .. } | StreamedBlock::ServerToolUse { input, .. },
+                BlockDelta::InputJson { partial_json },
+            ) => {
                 input.push_fragment(partial_json);
             }
             _ => {}
@@ -478,15 +518,20 @@ mod tests {
     #[test]
     fn unmodeled_kinds_decode_rather_than_fail() {
         let block =
-            StreamedBlock::decode(&json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"})).unwrap();
+            StreamedBlock::decode(&json!({"type": "code_execution_tool_result", "tool_use_id": "srvtoolu_1"})).unwrap();
         assert_eq!(
             block,
             StreamedBlock::Unmodeled {
-                kind: "web_search_tool_result".to_owned(),
-                value: json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1"}),
+                kind: "code_execution_tool_result".to_owned(),
+                value: json!({"type": "code_execution_tool_result", "tool_use_id": "srvtoolu_1"}),
             }
         );
-        assert_eq!(block.kind(), "web_search_tool_result");
+        assert_eq!(block.kind(), "code_execution_tool_result");
+
+        let novel_error = json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1",
+                                 "content": {"type": "web_search_tool_result_error", "error_code": "solar_flare"}});
+        let block = StreamedBlock::decode(&novel_error).unwrap();
+        assert_eq!(block, StreamedBlock::Unmodeled { kind: "web_search_tool_result".to_owned(), value: novel_error });
 
         let delta = BlockDelta::decode(&json!({"type": "constellation_delta"})).unwrap();
         assert_eq!(delta, BlockDelta::Unmodeled { kind: "constellation_delta".to_owned() });
@@ -555,6 +600,35 @@ mod tests {
         block.apply(&BlockDelta::Thinking { delta: "nor this".to_owned() });
         block.apply(&BlockDelta::Unmodeled { kind: "citations_delta".to_owned() });
         assert_eq!(block, original);
+    }
+
+    /// The documented streamed search: the call is announced without input, its
+    /// query arrives as one `input_json_delta`, and the result arrives whole.
+    #[test]
+    fn a_streamed_web_search_is_a_call_grown_by_deltas_and_a_whole_result() {
+        let mut call = StreamedBlock::decode(&json!({
+            "type": "server_tool_use", "id": "srvtoolu_xyz789", "name": "web_search"
+        }))
+        .unwrap();
+        assert_eq!(call.kind(), "server_tool_use");
+        call.apply(&BlockDelta::InputJson {
+            partial_json: r#"{"query":"latest quantum computing breakthroughs 2025"}"#.to_owned(),
+        });
+        let StreamedBlock::ServerToolUse { id, name, input } = &call else { panic!("expected a server tool call") };
+        assert_eq!((id.as_str(), name.as_str()), ("srvtoolu_xyz789", "web_search"));
+        assert_eq!(input.decode().unwrap(), json!({"query": "latest quantum computing breakthroughs 2025"}));
+
+        let result = StreamedBlock::decode(&json!({
+            "type": "web_search_tool_result", "tool_use_id": "srvtoolu_xyz789",
+            "content": [{"type": "web_search_result", "title": "Quantum Computing Breakthroughs in 2025",
+                         "url": "https://example.com", "encrypted_content": "EqgfCioI"}]
+        }))
+        .unwrap();
+        assert_eq!(result.kind(), "web_search_tool_result");
+        let StreamedBlock::WebSearchToolResult { tool_use_id, content } = &result else { panic!("expected a result") };
+        assert_eq!(tool_use_id, "srvtoolu_xyz789");
+        assert_eq!(content.results()[0].url, "https://example.com");
+        assert_eq!(result.text(), None, "search results are not answer text");
     }
 
     #[test]

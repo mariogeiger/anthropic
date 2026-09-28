@@ -21,6 +21,11 @@
 //!   mid-conversation without disturbing the cached prefix.
 //! * [`tool_choice`] — whether, and which, tool the model must call.
 //!
+//! # Both directions
+//!
+//! * [`web_search`] — the web search server tool, and the results a search
+//!   leaves in the model's turn for the next request to replay.
+//!
 //! # Inbound
 //!
 //! * [`frame`] — the Server-Sent Events envelope, and what a broken frame is.
@@ -92,9 +97,11 @@ pub mod response;
 pub mod settle;
 pub mod stream;
 pub mod system;
+mod tool;
 pub mod tool_choice;
 pub mod usage;
 pub mod values;
+pub mod web_search;
 
 pub use values::*;
 

@@ -442,3 +442,38 @@ fn tools_cached_marks_last_tool() {
     assert!(v["tools"][0].get("cache_control").is_none());
     assert_eq!(v["tools"][1]["cache_control"]["ttl"], "1h");
 }
+
+/// Server and custom tools share one ordered list, and the tools anchor lands on
+/// whichever comes last.
+#[test]
+fn a_web_search_tool_takes_its_place_in_the_tool_list_and_can_carry_the_anchor() {
+    use crate::web_search::WebSearchTool;
+    let tools: Vec<ToolDefinition> =
+        vec![Tool::new("read", serde_json::json!({"type": "object"})).into(), WebSearchTool::new().into()];
+    let v = req(&Context::new(Opening::None).with_tools_cached(CacheSlot::S0, tools, CacheTtl::OneHour).unwrap());
+    assert_eq!(v["tools"][0]["name"], "read");
+    assert!(v["tools"][0].get("type").is_none(), "a custom tool stays untagged");
+    assert_eq!(v["tools"][1]["type"], "web_search_20250305");
+    assert_eq!(v["tools"][1]["cache_control"]["ttl"], "1h");
+
+    let deferred_beside_search: Vec<ToolDefinition> =
+        vec![Tool::new("t", serde_json::json!({"type": "object"})).deferred().into(), WebSearchTool::new().into()];
+    let ctx = Context::new(Opening::None).with_tools(deferred_beside_search);
+    assert!(Request::new(&ctx, Model::opus_4_8(), 1024).is_ok(), "the search tool stays loaded");
+}
+
+/// An assistant turn ending in a server tool's result is waiting on no one, so
+/// the API accepts a system message after it — and a request carrying one.
+#[test]
+fn a_system_message_may_follow_a_turn_ending_in_a_search_result() {
+    use crate::block::WebSearchToolResultBlock;
+    use crate::web_search::WebSearchOutcome;
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("search");
+    ctx.push_assistant(vec![ContentBlock::WebSearchToolResult(WebSearchToolResultBlock::replay(
+        "srvtoolu_1",
+        WebSearchOutcome::Results(Vec::new()),
+    ))]);
+    assert_eq!(ctx.push_system_text("Cite every source.").err(), None);
+    assert_eq!(ctx.misplaced_system_message(), None);
+}

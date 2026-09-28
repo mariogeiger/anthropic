@@ -1,6 +1,6 @@
 use super::*;
 use crate::ThinkingDisplay;
-use crate::context::Opening;
+use crate::context::{Opening, Tool};
 use crate::system::{PerMessageEffort, SystemBlock, ToolReference};
 use crate::{BetaFeature, PrefixMismatchBehavior};
 use serde_json::Value;

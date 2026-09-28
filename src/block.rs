@@ -2,9 +2,10 @@
 //!
 //! The outbound counterpart of [`crate::content`], which holds what the model
 //! *produces*. Two sets rather than one, because they are genuinely different: a
-//! caller may send a document or a tool result, which a model never emits, and a
-//! model emits server-tool blocks a caller never sends. A single union type would
-//! admit both sets in both directions, and the API refuses that.
+//! caller may send a document or a tool result, which a model never emits. A
+//! single union type would admit both sets in both directions, and the API
+//! refuses that. Where the sets meet — thinking, tool calls, server-tool blocks —
+//! it is replay: the model's own blocks sent back on the next turn.
 //!
 //! # Cache metadata is not reachable from here
 //!
@@ -29,6 +30,7 @@ use serde_json::Value;
 
 use crate::context::CacheControl;
 use crate::document::{DocumentBlock, DocumentSource, SearchResultBlock};
+use crate::web_search::WebSearchOutcome;
 use crate::{ImageMediaType, ImageOversize, TextBlockType};
 
 /// Where an image's bytes come from.
@@ -266,6 +268,50 @@ impl RedactedThinkingBlock {
     }
 }
 
+/// A server tool call to replay into the conversation.
+///
+/// The API ran it inside the model's turn; replaying it keeps the result that
+/// follows it paired with the call that asked for it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerToolUseBlock {
+    /// The identifier the result block repeats.
+    pub id: String,
+    /// Which server tool ran.
+    pub name: String,
+    /// The input it ran with.
+    pub input: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+impl ServerToolUseBlock {
+    /// Replays one server tool call as the model made it.
+    pub fn replay(id: impl Into<String>, name: impl Into<String>, input: Value) -> Self {
+        Self { id: id.into(), name: name.into(), input, cache_control: None }
+    }
+}
+
+/// A web search's result to replay into the conversation.
+///
+/// Sent back exactly as it arrived: each result's `encrypted_content` is how the
+/// API restores what the model read, and an altered one is a 400.
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSearchToolResultBlock {
+    /// The [`ServerToolUseBlock::id`] this answers.
+    pub tool_use_id: String,
+    /// The pages found, or why the search failed.
+    pub content: WebSearchOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_control: Option<CacheControl>,
+}
+
+impl WebSearchToolResultBlock {
+    /// Replays one web search result as the API returned it.
+    pub fn replay(tool_use_id: impl Into<String>, content: WebSearchOutcome) -> Self {
+        Self { tool_use_id: tool_use_id.into(), content, cache_control: None }
+    }
+}
+
 /// One block of content to send.
 ///
 /// The outbound counterpart of [`crate::content::StreamedBlock`]: this one carries
@@ -291,6 +337,10 @@ pub enum ContentBlock {
     Thinking(ThinkingBlock),
     /// A redacted thinking block being replayed.
     RedactedThinking(RedactedThinkingBlock),
+    /// A server tool call being replayed.
+    ServerToolUse(ServerToolUseBlock),
+    /// A web search result being replayed.
+    WebSearchToolResult(WebSearchToolResultBlock),
     /// Source material the model may read and, with citations enabled, quote.
     Document(DocumentBlock),
     /// Material a search returned, carrying where it came from.
@@ -375,6 +425,8 @@ impl ContentBlock {
             Self::ToolResult(b) => &mut b.cache_control,
             Self::Thinking(b) => &mut b.cache_control,
             Self::RedactedThinking(b) => &mut b.cache_control,
+            Self::ServerToolUse(b) => &mut b.cache_control,
+            Self::WebSearchToolResult(b) => &mut b.cache_control,
             Self::Document(b) => &mut b.cache_control,
             Self::SearchResult(b) => &mut b.cache_control,
         }
@@ -412,6 +464,45 @@ mod tests {
         let v = request_of(&ctx);
         assert_eq!(v["messages"][0]["content"][0]["is_error"], false);
         assert_eq!(v["messages"][0]["content"][1]["is_error"], true);
+    }
+
+    /// A search replays as the two blocks it arrived as, the result's sealed
+    /// content untouched.
+    #[test]
+    fn a_web_search_replays_as_its_call_and_its_result() {
+        use crate::web_search::WebSearchResult;
+        let mut ctx = Context::new(Opening::None);
+        ctx.push_user_text("When was Claude Shannon born?");
+        ctx.push_assistant(vec![
+            ContentBlock::ServerToolUse(ServerToolUseBlock::replay(
+                "srvtoolu_1",
+                "web_search",
+                serde_json::json!({"query": "claude shannon birth date"}),
+            )),
+            ContentBlock::WebSearchToolResult(WebSearchToolResultBlock::replay(
+                "srvtoolu_1",
+                WebSearchOutcome::Results(vec![WebSearchResult {
+                    url: "https://en.wikipedia.org/wiki/Claude_Shannon".to_owned(),
+                    title: Some("Claude Shannon - Wikipedia".to_owned()),
+                    encrypted_content: "EqgfCioIARgB".to_owned(),
+                    page_age: None,
+                }]),
+            )),
+            ContentBlock::text("April 30, 1916."),
+        ]);
+        let v = request_of(&ctx);
+        assert_eq!(
+            v["messages"][1]["content"][0],
+            serde_json::json!({"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                               "input": {"query": "claude shannon birth date"}})
+        );
+        assert_eq!(
+            v["messages"][1]["content"][1],
+            serde_json::json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": [
+                {"type": "web_search_result", "url": "https://en.wikipedia.org/wiki/Claude_Shannon",
+                 "title": "Claude Shannon - Wikipedia", "encrypted_content": "EqgfCioIARgB"}
+            ]})
+        );
     }
 
     /// The default silently rescales an oversized image, so asking to be told

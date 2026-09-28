@@ -449,6 +449,29 @@ api_enum! {
     }
 }
 
+api_enum! {
+    roundtrip
+    /// Why one web search failed, as its `web_search_tool_result_error` says.
+    ///
+    /// A failed search is not a failed request: the API answers 200 and puts the
+    /// error in the result block, so the model reads it and carries on. The code
+    /// is the only thing the caller learns, and a failed search is not billed.
+    WebSearchErrorCode {
+        /// The search rate limit was exceeded.
+        TooManyRequests => "too_many_requests",
+        /// The model's search query was not a valid parameter.
+        InvalidToolInput => "invalid_tool_input",
+        /// The model tried to search more times than the tool's `max_uses`.
+        MaxUsesExceeded => "max_uses_exceeded",
+        /// The query exceeded the maximum length.
+        QueryTooLong => "query_too_long",
+        /// The search request was too large, typically a long domain filter.
+        RequestTooLarge => "request_too_large",
+        /// An internal error occurred.
+        Unavailable => "unavailable",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

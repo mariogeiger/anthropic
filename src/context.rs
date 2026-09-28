@@ -86,7 +86,8 @@ use crate::block::{ContentBlock, TextBlock, ToolResultContent};
 use crate::system::{PerMessageEffort, SystemBlock, SystemClearAt, SystemMessage};
 use crate::{BetaFeature, CacheControlType, CacheTtl, Role};
 use serde::Serialize;
-use serde_json::Value;
+
+pub use crate::tool::{Tool, ToolDefinition};
 
 // ── Cache control ────────────────────────────────────────────────────────────
 
@@ -290,94 +291,17 @@ impl Message {
     fn carries_system_content(&self) -> bool {
         matches!(self, Message::System(message) if message.carries_content())
     }
-}
 
-/// One tool the model may call.
-///
-/// Changing any of these fields invalidates the whole cache — tools sit first in
-/// the `tools → system → messages` hierarchy, so a change there invalidates every
-/// level. Compare [`crate::tool_choice::ToolChoice`], which costs only the message
-/// cache.
-#[derive(Debug, Clone, Serialize)]
-pub struct Tool {
-    /// The name the model calls it by, and that its `tool_use` blocks carry.
-    pub name: String,
-    /// What it does, in the model's words.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// Its JSON Schema. Key order matters for caching: a schema whose keys move
-    /// between requests is a different prefix.
-    pub input_schema: Value,
-    /// Whether to withhold this tool from the served schema until a tool search
-    /// returns a reference to it.
+    /// Whether a mid-conversation system message may follow this entry.
     ///
-    /// A `bool` rather than an `Option`, because every tool is either deferred or
-    /// not, and it is emitted only when `true`: the field is rendered into the
-    /// prompt, so emitting `false` where the caller never asked for it writes a
-    /// different prefix and a different cache key — the same reasoning as
-    /// [`crate::tool_choice::ToolChoice`]'s parallel-use flag.
-    ///
-    /// The API refuses a request whose every tool is deferred (`At least one tool
-    /// must have defer_loading=false`). That is a relation across the tool list,
-    /// not a property of one tool, so [`Context::with_tools`] checks it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub defer_loading: bool,
-    /// Whether the API validates the model's tool names and inputs against the
-    /// schema. Emitted only when `true`, for the same prompt-identity reason.
-    ///
-    /// Measured: the inference gateway refuses this field with
-    /// `tools.0.custom.strict: Extra inputs are not permitted`. It is in the
-    /// documented stable schema, so it is here.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub strict: bool,
-    /// Example inputs shown to the model beside the schema. Empty means none;
-    /// there is no "no examples" distinct from "an empty list of examples".
-    ///
-    /// Measured: the inference gateway refuses this field with
-    /// `tools.0.custom.input_examples: Extra inputs are not permitted`. It is in
-    /// the documented stable schema, so it is here.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub input_examples: Vec<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cache_control: Option<CacheControl>,
-}
-
-impl Tool {
-    /// A tool with this name and schema, and no description yet.
-    pub fn new(name: impl Into<String>, input_schema: Value) -> Self {
-        Self {
-            name: name.into(),
-            description: None,
-            input_schema,
-            defer_loading: false,
-            strict: false,
-            input_examples: Vec::new(),
-            cache_control: None,
+    /// A user turn, or an assistant turn ending in a server tool's result: the
+    /// API ran that tool inside the turn, so the turn is waiting on no one.
+    fn admits_system_after(&self) -> bool {
+        match self {
+            Message::User(_) => true,
+            Message::Assistant(content) => matches!(content.last(), Some(ContentBlock::WebSearchToolResult(_))),
+            Message::System(_) => false,
         }
-    }
-    /// Describes what the tool does.
-    pub fn description(mut self, d: impl Into<String>) -> Self {
-        self.description = Some(d.into());
-        self
-    }
-    /// Withholds this tool from the served schema until a tool search finds it.
-    ///
-    /// Worth it for a large tool set: the deferred tools cost no prompt tokens
-    /// until the model asks for them. At least one tool must stay undeferred, which
-    /// [`Context::with_tools`] checks.
-    pub fn deferred(mut self) -> Self {
-        self.defer_loading = true;
-        self
-    }
-    /// Has the API validate the model's tool names and inputs against the schema.
-    pub fn strict(mut self) -> Self {
-        self.strict = true;
-        self
-    }
-    /// Shows the model example inputs beside the schema.
-    pub fn input_examples(mut self, examples: Vec<Value>) -> Self {
-        self.input_examples = examples;
-        self
     }
 }
 
@@ -563,8 +487,7 @@ pub enum SystemMessageError {
     /// [`Opening::Instruction`] and is cached better anyway.
     First,
     /// It would follow an assistant turn. The API accepts one only after a user
-    /// turn, or after an assistant turn ending in a server tool result — a block
-    /// this crate cannot yet build, so no assistant tail it produces qualifies.
+    /// turn, or after an assistant turn ending in a server tool result.
     AfterAssistant,
 }
 
@@ -599,7 +522,7 @@ impl std::error::Error for SystemMessageError {}
 /// Breakpoints live in four named [`CacheSlot`]s and are moved by metadata-only
 /// operations that validate TTL ordering *before* they commit.
 pub struct Context {
-    pub(crate) tools: Vec<Tool>,
+    pub(crate) tools: Vec<ToolDefinition>,
     pub(crate) system: Option<SystemPrompt>,
     pub(crate) messages: Vec<Message>,
     slots: [Option<SlotState>; 4],
@@ -650,14 +573,24 @@ impl Context {
         self.system.as_ref().map(|prompt| prompt.text.as_str())
     }
 
-    /// Sets the tools, uncached.
-    pub fn with_tools(mut self, tools: Vec<Tool>) -> Self {
-        self.tools = tools;
+    /// Sets the tools, uncached, in the order given.
+    ///
+    /// Takes anything that becomes a [`ToolDefinition`], so a list of custom
+    /// [`Tool`]s is passed as it is and a list mixing server tools names each
+    /// entry's kind.
+    pub fn with_tools<T: Into<ToolDefinition>>(mut self, tools: impl IntoIterator<Item = T>) -> Self {
+        self.tools = tools.into_iter().map(Into::into).collect();
         self
     }
 
     /// Attach a cache breakpoint on the last tool.
-    pub fn with_tools_cached(mut self, slot: CacheSlot, tools: Vec<Tool>, ttl: CacheTtl) -> Result<Self, AnchorError> {
+    pub fn with_tools_cached<T: Into<ToolDefinition>>(
+        mut self,
+        slot: CacheSlot,
+        tools: impl IntoIterator<Item = T>,
+        ttl: CacheTtl,
+    ) -> Result<Self, AnchorError> {
+        let tools: Vec<ToolDefinition> = tools.into_iter().map(Into::into).collect();
         if tools.is_empty() {
             return Err(AnchorError::NoToolsToCache);
         }
@@ -749,12 +682,8 @@ impl Context {
             .map(|at| &self.messages[at]);
         match before_run {
             None => return Err(SystemMessageError::First),
-            // An assistant turn ending in a server tool use is also legal, but
-            // this crate cannot yet build a server-tool block, so no assistant
-            // tail it can produce satisfies the rule.
-            Some(Message::Assistant(_)) => return Err(SystemMessageError::AfterAssistant),
-            Some(Message::User(_)) => {}
-            Some(Message::System(_)) => unreachable!("rposition skipped system messages"),
+            Some(message) if message.admits_system_after() => {}
+            Some(_) => return Err(SystemMessageError::AfterAssistant),
         }
         self.messages.push(Message::System(message));
         Ok(())
@@ -822,7 +751,7 @@ impl Context {
     /// Readable because a request-level invariant depends on the whole list —
     /// see [`crate::request::RequestError::EveryToolDeferred`] — and because a
     /// caller replaying a conversation wants to see what it offered.
-    pub fn tools(&self) -> &[Tool] {
+    pub fn tools(&self) -> &[ToolDefinition] {
         &self.tools
     }
 
@@ -858,7 +787,7 @@ impl Context {
                 end += 1;
             }
             let carries_content = self.messages[start..end].iter().any(Message::carries_system_content);
-            let valid_predecessor = start > 0 && matches!(self.messages[start - 1], Message::User(_));
+            let valid_predecessor = start > 0 && self.messages[start - 1].admits_system_after();
             let valid_successor = matches!(self.messages.get(end), None | Some(Message::Assistant(_)));
             if carries_content && (!valid_predecessor || !valid_successor) {
                 return Some(end - 1);
@@ -939,7 +868,7 @@ impl Context {
             }
             SlotLocation::Tools => {
                 if let Some(t) = self.tools.last_mut() {
-                    t.cache_control = cc;
+                    *t.cache_control_mut() = cc;
                 }
             }
             SlotLocation::Message { msg, block } => {

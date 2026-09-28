@@ -36,9 +36,11 @@ way in: every documented event and delta kind, content blocks, citations, refusa
 details, input transformations, and the full usage breakdown.
 
 Not covered, deliberately: no HTTP client, and no endpoint but Messages — Batches,
-Files, Models, and Skills are separate APIs. Server-side tools (web search, web
-fetch, code execution, computer and browser use, MCP toolsets) are not yet
-declarable; their blocks decode as `Unmodeled` rather than failing.
+Files, Models, and Skills are separate APIs. Of the server-side tools, web
+search is declarable in its basic version, and its call and result blocks decode
+and replay. The others (web fetch, code execution, computer and browser use, MCP
+toolsets, and web search run from code execution) are not yet declarable; their
+blocks decode as `Unmodeled` rather than failing.
 
 ## Sending a request
 

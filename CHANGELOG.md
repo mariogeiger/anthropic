@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.14.0
+
+- The web search server tool is declarable: `web_search::WebSearchTool`
+  (`web_search_20250305`), with `max_uses`, an allowed- or blocked-domain
+  `DomainFilter` that cannot hold both, and a `UserLocation` that cannot be
+  empty.
+- A search decodes instead of arriving as `Unmodeled`:
+  `StreamedBlock::ServerToolUse` grows by `input_json_delta` exactly as a tool
+  call does, so its query is no longer lost, and
+  `StreamedBlock::WebSearchToolResult` carries a `WebSearchOutcome` — the
+  results with their `encrypted_content`, or a `WebSearchErrorCode`. A result
+  with an error code this crate does not know stays `Unmodeled`.
+- Both blocks replay: `ContentBlock::ServerToolUse` and
+  `ContentBlock::WebSearchToolResult` send them back exactly as they arrived,
+  which the API requires of every search result.
+- `Context::push_system` accepts a system message after an assistant turn ending
+  in a search result, which the API allows and this crate could not build before.
+
+### Breaking: the tool list is a list of `ToolDefinition`s
+
+The `tools` array is a union of custom and server tools, so `Context` holds
+`ToolDefinition::Custom(Tool)` and `ToolDefinition::WebSearch(WebSearchTool)` in
+one ordered list. `Context::tools` returns `&[ToolDefinition]`, and
+`with_tools` and `with_tools_cached` take anything that converts into one.
+
+**Migration.** Code passing a `Vec<Tool>` compiles unchanged. Code reading
+`Context::tools` matches the variant, or calls `ToolDefinition::name` and
+`ToolDefinition::is_deferred`:
+
+```text
+ctx.tools()[0].name          → ctx.tools()[0].name()
+ctx.tools()[0].defer_loading → ctx.tools()[0].is_deferred()
+```
+
+To offer search beside custom tools, convert each entry:
+
+```text
+ctx.with_tools(vec![Tool::new(..).into(), WebSearchTool::new().into()])
+```
+
 ## 0.13.0
 
 - `PromptCache::peek` names the entry a request would read without serving
