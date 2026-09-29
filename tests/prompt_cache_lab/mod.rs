@@ -10,11 +10,12 @@
 use std::time::Duration;
 
 use anthropic::CacheTtl;
+use anthropic::ThinkingDisplayWithUpdates;
 use anthropic::block::{ContentBlock, ImageSource, ToolResultContent};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::DocumentSource;
 use anthropic::prompt_cache::{CacheKeys, PrefixTokens, PromptCache, PromptUsage};
-use anthropic::request::{Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Request};
+use anthropic::request::{Model, Opus5_5, Opus5_5Effort, Request};
 use anthropic::tool_choice::ToolChoice;
 use anthropic::usage::Usage;
 use anthropic::{ImageMediaType, Role};
@@ -102,7 +103,7 @@ impl Script {
     }
 
     pub fn request<'a>(&self, context: &'a Context) -> Request<'a> {
-        let model = Opus5_5 { effort: self.effort, display: Opus5_5ThinkingDisplay::Omitted };
+        let model = Opus5_5 { effort: self.effort, display: ThinkingDisplayWithUpdates::Omitted };
         let request = Request::new(context, Model::Opus5_5(model), 1).expect("valid request");
         match &self.tool_choice {
             Some(choice) => request.with_tool_choice(choice.clone()).expect("accepted tool choice"),

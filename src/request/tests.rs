@@ -48,14 +48,14 @@ fn opus_5_5_supports_every_documented_effort_and_display() {
         (Opus5_5Effort::Xhigh, "xhigh"),
         (Opus5_5Effort::Max, "max"),
     ] {
-        let model = Model::opus_5_5().with_display(Opus5_5ThinkingDisplay::Summarized).with_effort(effort);
+        let model = Model::opus_5_5().with_display(ThinkingDisplayWithUpdates::Summarized).with_effort(effort);
         let v = req(model);
         assert_eq!(v["thinking"]["display"], "summarized");
         assert_eq!(v["output_config"]["effort"], name);
     }
 
     let ctx = Context::new(Opening::None);
-    let request = Request::new(&ctx, Model::opus_5_5().with_display(Opus5_5ThinkingDisplay::Updates), 16).unwrap();
+    let request = Request::new(&ctx, Model::opus_5_5().with_display(ThinkingDisplayWithUpdates::Updates), 16).unwrap();
     assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
 }
 
@@ -90,7 +90,7 @@ fn fable_5_1_supports_every_documented_effort_and_summary_visibility() {
         (Fable5_1Effort::Xhigh, "xhigh"),
         (Fable5_1Effort::Max, "max"),
     ] {
-        let v = req(Model::fable_5_1().with_display(FableThinkingDisplay::Summarized).with_effort(effort));
+        let v = req(Model::fable_5_1().with_display(ThinkingDisplayWithUpdates::Summarized).with_effort(effort));
         assert_eq!(v["thinking"]["display"], "summarized");
         assert_eq!(v["output_config"]["effort"], name);
     }
@@ -99,7 +99,7 @@ fn fable_5_1_supports_every_documented_effort_and_summary_visibility() {
 #[test]
 fn fable_5_1_updates_and_binding_serialize_inside_thinking() {
     let ctx = Context::new(Opening::None);
-    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 16)
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(ThinkingDisplayWithUpdates::Updates), 16)
         .unwrap()
         .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)
         .unwrap();
@@ -152,7 +152,7 @@ fn binding_controls_serialize_on_every_enabled_thinking_shape() {
 #[test]
 fn fable_5_updates_require_the_same_beta_as_fable_5_1() {
     let ctx = Context::new(Opening::None);
-    let request = Request::new(&ctx, Model::fable_5().with_display(FableThinkingDisplay::Updates), 16).unwrap();
+    let request = Request::new(&ctx, Model::fable_5().with_display(ThinkingDisplayWithUpdates::Updates), 16).unwrap();
     assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
     assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");
 }
@@ -218,7 +218,7 @@ fn beta_features_are_inferred_once_in_wire_order() {
     ctx.push_assistant_text("done");
     ctx.push_effort(PerMessageEffort::Low);
 
-    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 16)
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(ThinkingDisplayWithUpdates::Updates), 16)
         .unwrap()
         .with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error)
         .unwrap();
@@ -316,7 +316,7 @@ fn fable_5_default() {
 
 #[test]
 fn fable_5_summarized_and_xhigh() {
-    let v = req(Model::fable_5().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh));
+    let v = req(Model::fable_5().with_display(ThinkingDisplayWithUpdates::Summarized).with_effort(Fable5Effort::Xhigh));
     assert_eq!(v["thinking"]["type"], "adaptive");
     assert_eq!(v["thinking"]["display"], "summarized");
     assert_eq!(v["output_config"]["effort"], "xhigh");
@@ -423,11 +423,11 @@ fn sonnet_5_5_between_tools_is_a_bare_tag_with_its_own_effort() {
     assert_eq!(v["output_config"]["effort"], "medium");
     let v = req(Model::sonnet_5_5()
         .with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::Low)
-        .with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Summarized));
+        .with_adaptive_thinking(ThinkingDisplayWithUpdates::Summarized));
     assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "summarized"}));
     assert_eq!(v["output_config"]["effort"], "high", "leaving between_tools restores the documented default");
     let v = req(Model::sonnet_5_5()
-        .with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Summarized)
+        .with_adaptive_thinking(ThinkingDisplayWithUpdates::Summarized)
         .with_effort(Sonnet5_5Effort::Max));
     assert_eq!(v["thinking"]["display"], "summarized", "effort keeps the display");
     assert_eq!(v["output_config"]["effort"], "max");
@@ -436,7 +436,7 @@ fn sonnet_5_5_between_tools_is_a_bare_tag_with_its_own_effort() {
 #[test]
 fn sonnet_5_5_updates_display_requires_its_beta() {
     let ctx = Context::new(Opening::None);
-    let updates = Model::sonnet_5_5().with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Updates);
+    let updates = Model::sonnet_5_5().with_adaptive_thinking(ThinkingDisplayWithUpdates::Updates);
     let request = Request::new(&ctx, updates, 16).unwrap();
     assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
     assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");

@@ -1,23 +1,7 @@
-//! Claude Fable parameters and their model-specific thinking display.
+//! Claude Fable 5.1 parameters and its always-on thinking controls.
 
 use super::Fable5Effort;
-use crate::values::api_enum;
-
-api_enum! {
-    /// What Fable 5 and Fable 5.1 return from adaptive thinking.
-    ///
-    /// `Updates` is intentionally absent from [`crate::ThinkingDisplay`]: the
-    /// separate Fable type keeps the beta value off models that cannot use it.
-    FableThinkingDisplay {
-        /// Provider-safe reasoning summaries are returned.
-        Summarized => "summarized",
-        /// No reasoning text is returned. The documented default.
-        Omitted => "omitted",
-        /// Only short progress updates between tool calls are returned; private
-        /// reasoning remains hidden.
-        Updates => "updates",
-    }
-}
+use crate::ThinkingDisplayWithUpdates;
 
 /// Fable 5.1's per-call parameters.
 ///
@@ -30,14 +14,14 @@ api_enum! {
 /// ```
 pub struct Fable5_1 {
     /// Which safe subset of thinking text the provider returns.
-    pub display: FableThinkingDisplay,
+    pub display: ThinkingDisplayWithUpdates,
     /// How much work the model spends over the complete supported range.
     pub effort: Fable5_1Effort,
 }
 
 impl Default for Fable5_1 {
     fn default() -> Self {
-        Self { display: FableThinkingDisplay::Omitted, effort: Fable5Effort::High }
+        Self { display: ThinkingDisplayWithUpdates::Omitted, effort: Fable5Effort::High }
     }
 }
 
@@ -55,7 +39,7 @@ impl Fable5_1 {
     }
 
     /// Chooses whether summaries, progress updates, or no thinking text returns.
-    pub fn with_display(mut self, display: FableThinkingDisplay) -> Self {
+    pub fn with_display(mut self, display: ThinkingDisplayWithUpdates) -> Self {
         self.display = display;
         self
     }

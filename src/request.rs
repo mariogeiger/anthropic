@@ -21,7 +21,7 @@
 use crate::context::{Context, Message, SystemPrompt, ToolDefinition};
 use crate::system::PerMessageEffort;
 use crate::tool_choice::ToolChoice;
-use crate::values::{BetaFeature, OutputFormatType, ServiceTier, ThinkingType};
+use crate::values::{BetaFeature, OutputFormatType, ServiceTier, ThinkingDisplayWithUpdates, ThinkingType};
 use serde::Serialize;
 
 // The model types were part of this module before they outgrew it. Named
@@ -29,11 +29,10 @@ use serde::Serialize;
 // meaning what it always did without shadowing this module's own wire structs.
 // The canonical home is [`crate::model`].
 pub use crate::model::{
-    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Haiku4_5, Haiku4_5Thinking, Model, ModelId,
-    Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Opus5Effort,
-    Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5_5,
-    Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5_5ThinkingDisplay, Sonnet5Effort,
-    Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
+    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Month, Opus4_8,
+    Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5_5, Opus5_5Effort, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort,
+    Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5_5, Sonnet5_5BetweenToolsEffort,
+    Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -554,22 +553,25 @@ impl<'a> Request<'a> {
         if self.context.requires_beta(feature) {
             return true;
         }
-        match (&self.model, feature) {
-            (Model::Opus5_5(model), BetaFeature::ThinkingDisplayUpdates) => {
-                model.display == Opus5_5ThinkingDisplay::Updates
+        match feature {
+            BetaFeature::ThinkingDisplayUpdates => {
+                display_with_updates(&self.model) == Some(ThinkingDisplayWithUpdates::Updates)
             }
-            (Model::Sonnet5_5(model), BetaFeature::ThinkingDisplayUpdates) => {
-                matches!(model.thinking, Sonnet5_5Thinking::Adaptive { display: Sonnet5_5ThinkingDisplay::Updates, .. })
-            }
-            (Model::Fable5_1(model), BetaFeature::ThinkingDisplayUpdates) => {
-                model.display == FableThinkingDisplay::Updates
-            }
-            (Model::Fable5(model), BetaFeature::ThinkingDisplayUpdates) => {
-                model.display == FableThinkingDisplay::Updates
-            }
-            (_, BetaFeature::ThinkingBindingControls) => self.prefix_mismatch_behavior.is_some(),
+            BetaFeature::ThinkingBindingControls => self.prefix_mismatch_behavior.is_some(),
             _ => false,
         }
+    }
+}
+
+/// The display of a model whose display vocabulary includes `updates`, where it
+/// thinks adaptively; `None` for every other configuration.
+fn display_with_updates(model: &Model) -> Option<ThinkingDisplayWithUpdates> {
+    match model {
+        Model::Opus5_5(Opus5_5 { display, .. })
+        | Model::Fable5_1(Fable5_1 { display, .. })
+        | Model::Fable5(Fable5 { display, .. })
+        | Model::Sonnet5_5(Sonnet5_5 { thinking: Sonnet5_5Thinking::Adaptive { display, .. } }) => Some(*display),
+        _ => None,
     }
 }
 
@@ -646,9 +648,9 @@ struct BlockBinding {
 struct AdaptiveThinking {
     #[serde(rename = "type")]
     kind: ThinkingType,
-    // Only some always-on-thinking models accept the beta `updates` value, so
-    // public model types carry their own closed enums and this private wire
-    // shape receives their strings.
+    // Only some models accept the beta `updates` value, so the public types
+    // split the vocabulary in two closed enums and this private wire shape
+    // receives either one's strings.
     #[serde(skip_serializing_if = "Option::is_none")]
     display: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]

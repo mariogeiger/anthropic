@@ -5,8 +5,9 @@
 //! They consume credentials only when a non-empty `.key` exists in the crate
 //! root, and cap output at one token. First exercised on 2026-09-29.
 
+use anthropic::ThinkingDisplayWithUpdates;
 use anthropic::context::{Context, Opening};
-use anthropic::request::{Model, Request, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5ThinkingDisplay};
+use anthropic::request::{Model, Request, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort};
 use anthropic::system::PerMessageEffort;
 use anthropic::{BetaFeature, MESSAGES_PATH, PrefixMismatchBehavior};
 use serde_json::{Value, json};
@@ -109,7 +110,7 @@ fn live_ok_sonnet_5_5_between_tools_at_each_accepted_effort() {
 fn live_ok_sonnet_5_5_updates_display_and_binding_carry_their_inferred_headers() {
     let key = key_or_skip!();
     let context = user_context("Reply with the single word: ok");
-    let model = Model::sonnet_5_5().with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Updates);
+    let model = Model::sonnet_5_5().with_adaptive_thinking(ThinkingDisplayWithUpdates::Updates);
     let request = Request::new(&context, model, 1)
         .unwrap()
         .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)

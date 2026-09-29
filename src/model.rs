@@ -21,8 +21,8 @@
 
 #![allow(non_camel_case_types)]
 
-use crate::ThinkingDisplay;
 use crate::values::api_enum;
+use crate::{ThinkingDisplay, ThinkingDisplayWithUpdates};
 
 // ── Temperature ──────────────────────────────────────────────────────────────
 
@@ -508,12 +508,12 @@ impl From<Haiku4_5> for Model {
 // ── Opus 5.5 ────────────────────────────────────────────────────────────────
 
 mod opus_5_5;
-pub use opus_5_5::{Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay};
+pub use opus_5_5::{Opus5_5, Opus5_5Effort};
 
 // ── Fable 5.1 ────────────────────────────────────────────────────────────────
 
 mod fable;
-pub use fable::{Fable5_1, Fable5_1Effort, FableThinkingDisplay};
+pub use fable::{Fable5_1, Fable5_1Effort};
 
 // ── Fable 5 ──────────────────────────────────────────────────────────────────
 // Frontier tier. No sampling (temperature/top_p/top_k rejected). Thinking is
@@ -529,14 +529,14 @@ pub use fable::{Fable5_1, Fable5_1Effort, FableThinkingDisplay};
 /// [`Fable5Effort`]; visibility is `display`.
 pub struct Fable5 {
     /// Whether reasoning text is sent back. `Omitted` by default.
-    pub display: FableThinkingDisplay,
+    pub display: ThinkingDisplayWithUpdates,
     /// How much thinking to spend.
     pub effort: Fable5Effort,
 }
 
 impl Default for Fable5 {
     fn default() -> Self {
-        Self { display: FableThinkingDisplay::Omitted, effort: Fable5Effort::High }
+        Self { display: ThinkingDisplayWithUpdates::Omitted, effort: Fable5Effort::High }
     }
 }
 
@@ -555,7 +555,7 @@ impl Fable5 {
     /// Set the thinking summary visibility. Thinking can't be turned off on
     /// Fable 5; pass `Summarized` for visible reasoning text, `Omitted` (default)
     /// for empty thinking blocks.
-    pub fn with_display(mut self, display: FableThinkingDisplay) -> Self {
+    pub fn with_display(mut self, display: ThinkingDisplayWithUpdates) -> Self {
         self.display = display;
         self
     }
@@ -663,9 +663,7 @@ api_enum! {
 // ── Sonnet 5.5 ───────────────────────────────────────────────────────────────
 
 mod sonnet_5_5;
-pub use sonnet_5_5::{
-    Sonnet5_5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5_5ThinkingDisplay,
-};
+pub use sonnet_5_5::{Sonnet5_5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking};
 
 // ── Sonnet 5 ─────────────────────────────────────────────────────────────────
 // Prior Sonnet tier. No sampling (temperature/top_p/top_k non-default rejected,

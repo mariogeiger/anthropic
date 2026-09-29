@@ -53,12 +53,13 @@
 // first-party API in both directions, so these remain to be confirmed on an
 // org with a `.key`.
 
+use anthropic::ThinkingDisplayWithUpdates;
 use anthropic::block::{ContentBlock, TextBlock};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};
 use anthropic::document::{DocumentBlock, DocumentSource, SearchResultBlock};
 use anthropic::request::{
-    CountRequest, EndUserId, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Model, ModelId, Opus4_8Effort,
-    Opus5Effort, Opus5ThinkingOffEffort, OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
+    CountRequest, EndUserId, Fable5_1Effort, Fable5Effort, Model, ModelId, Opus4_8Effort, Opus5Effort,
+    Opus5ThinkingOffEffort, OutputFormat, Request, Sonnet4_6Effort, Sonnet5Effort, Temperature,
 };
 use anthropic::response::Response;
 use anthropic::system::{PerMessageEffort, SystemBlock, ToolReference};
@@ -197,7 +198,8 @@ fn live_ok_opus_4_8_adaptive_xhigh() {
 fn live_ok_fable_5_1_summarized_xhigh() {
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply with the single word: ok");
-    let model = Model::fable_5_1().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5_1Effort::Xhigh);
+    let model =
+        Model::fable_5_1().with_display(ThinkingDisplayWithUpdates::Summarized).with_effort(Fable5_1Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 64).unwrap(), &key);
     if fable5_unavailable(code, &body) {
         return;
@@ -216,7 +218,7 @@ fn live_ok_fable_5_1_beta_controls_and_inferred_headers() {
     ctx.push_user_text("Reply with the single word: ok");
     ctx.push_system(vec![SystemBlock::tool_removal(ToolReference::tool("noop"))]).unwrap();
     ctx.push_turn_scoped_text("Use one word.").unwrap();
-    let request = Request::new(&ctx, Model::fable_5_1().with_display(FableThinkingDisplay::Updates), 1)
+    let request = Request::new(&ctx, Model::fable_5_1().with_display(ThinkingDisplayWithUpdates::Updates), 1)
         .unwrap()
         .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)
         .unwrap();
@@ -234,7 +236,7 @@ fn live_ok_fable_5_1_beta_controls_and_inferred_headers() {
 fn live_ok_fable_5_updates_display() {
     let key = key_or_skip!();
     let ctx = user_ctx("Reply ok");
-    let request = Request::new(&ctx, Model::fable_5().with_display(FableThinkingDisplay::Updates), 1).unwrap();
+    let request = Request::new(&ctx, Model::fable_5().with_display(ThinkingDisplayWithUpdates::Updates), 1).unwrap();
     let (code, body) = post_request(&request, &key);
     if fable5_unavailable(code, &body) {
         return;
@@ -275,7 +277,7 @@ fn live_ok_fable_5_summarized_xhigh() {
     // visible-reasoning display.
     let key = key_or_skip!();
     let ctx = user_ctx("Think briefly, then reply: ok");
-    let model = Model::fable_5().with_display(FableThinkingDisplay::Summarized).with_effort(Fable5Effort::Xhigh);
+    let model = Model::fable_5().with_display(ThinkingDisplayWithUpdates::Summarized).with_effort(Fable5Effort::Xhigh);
     let (code, body) = post(MESSAGES_PATH, &Request::new(&ctx, model, 16).unwrap(), &key);
     if fable5_unavailable(code, &body) {
         return;

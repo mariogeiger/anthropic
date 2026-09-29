@@ -181,9 +181,8 @@ api_enum! {
 }
 
 api_enum! {
-    /// The shared `thinking.display` vocabulary for models without the Fable
-    /// progress-update beta. See [`crate::model::FableThinkingDisplay`] for
-    /// the model-specific superset.
+    /// The `thinking.display` vocabulary of models that refuse `updates`. See
+    /// [`ThinkingDisplayWithUpdates`] for the models that accept it.
     ThinkingDisplay {
         /// A condensed summary of the reasoning arrives as `thinking_delta`
         /// events.
@@ -193,6 +192,29 @@ api_enum! {
         /// [`crate::content::StreamedBlock::Thinking`] arrives with an empty
         /// `thinking` field and a real signature.
         Omitted => "omitted",
+    }
+}
+
+api_enum! {
+    /// The `thinking.display` vocabulary of models that accept progress updates:
+    /// Fable 5.1, Fable 5, Opus 5.5 and Sonnet 5.5.
+    ///
+    /// A separate type rather than a third [`ThinkingDisplay`] value, because
+    /// every other model refuses `updates`; the type keeps it off them. `Updates`
+    /// requires the `thinking-display-updates-2026-08-18` beta header, which
+    /// [`crate::request::Request::required_beta_features`] infers from it.
+    ///
+    /// ```compile_fail
+    /// let _ = anthropic::request::Model::opus_5().with_adaptive_thinking(anthropic::ThinkingDisplay::Updates);
+    /// ```
+    ThinkingDisplayWithUpdates {
+        /// Provider-safe reasoning summaries are returned.
+        Summarized => "summarized",
+        /// No reasoning text is returned. The documented default.
+        Omitted => "omitted",
+        /// Only short progress updates between tool calls are returned; private
+        /// reasoning remains hidden.
+        Updates => "updates",
     }
 }
 

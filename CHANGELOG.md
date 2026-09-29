@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.17.0
+
+- The display vocabulary is split by what the API accepts rather than by
+  model: `ThinkingDisplay` (`summarized`, `omitted`) for the models that refuse
+  `updates`, and the new `ThinkingDisplayWithUpdates` (`summarized`, `omitted`,
+  `updates`) for Fable 5.1, Fable 5, Opus 5.5 and Sonnet 5.5. Both live at the
+  crate root. A `compile_fail` doctest proves `updates` cannot reach a model
+  that refuses it (E0599). The request infers the `updates` beta header from one
+  place instead of one arm per model. No request body changes.
+
+### Breaking: three per-model display enums become `ThinkingDisplayWithUpdates`
+
+`FableThinkingDisplay`, `Opus5_5ThinkingDisplay` and `Sonnet5_5ThinkingDisplay`
+had the same three values and are removed.
+
+**Migration.** Rename each, and import it from the crate root, as
+`ThinkingDisplay` already is:
+
+```text
+anthropic::request::FableThinkingDisplay     → anthropic::ThinkingDisplayWithUpdates
+anthropic::request::Opus5_5ThinkingDisplay   → anthropic::ThinkingDisplayWithUpdates
+anthropic::request::Sonnet5_5ThinkingDisplay → anthropic::ThinkingDisplayWithUpdates
+```
+
+  `anthropic` is now 0.17.0.
+
 ## 0.16.0
 
 - Claude Sonnet 5.5 is now a first-class model: `Model::sonnet_5_5`,

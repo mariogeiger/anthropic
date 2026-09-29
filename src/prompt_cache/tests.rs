@@ -3,12 +3,12 @@ use std::time::Duration;
 use serde_json::json;
 
 use super::*;
+use crate::ThinkingDisplayWithUpdates;
 use crate::block::{ContentBlock, ImageSource};
 use crate::context::{CacheSlot, Context, Opening, Tool};
 use crate::request::Request;
 use crate::request::{
-    Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Sonnet5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort,
-    Sonnet5Effort,
+    Model, Opus5_5, Opus5_5Effort, Sonnet5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5Effort,
 };
 use crate::tool_choice::ToolChoice;
 
@@ -349,8 +349,8 @@ fn sonnet_5_5_renders_effort_and_thinking_mode_at_different_levels() {
 fn thinking_display_is_not_rendered() {
     let context = conversation();
     let sizes = tokens(&[600, 900], 904);
-    let summarized = Model::Opus5_5(Opus5_5 { display: Opus5_5ThinkingDisplay::Summarized, ..Model::opus_5_5() });
-    let omitted = Model::Opus5_5(Opus5_5 { display: Opus5_5ThinkingDisplay::Omitted, ..Model::opus_5_5() });
+    let summarized = Model::Opus5_5(Opus5_5 { display: ThinkingDisplayWithUpdates::Summarized, ..Model::opus_5_5() });
+    let omitted = Model::Opus5_5(Opus5_5 { display: ThinkingDisplayWithUpdates::Omitted, ..Model::opus_5_5() });
     let mut cache = PromptCache::new();
     cache.serve(&CacheKeys::of(&Request::new(&context, summarized, 1).unwrap()), T0, &sizes).unwrap();
     let served = cache.serve(&CacheKeys::of(&Request::new(&context, omitted, 1).unwrap()), secs(1), &sizes).unwrap();

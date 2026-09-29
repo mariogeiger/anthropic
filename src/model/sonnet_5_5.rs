@@ -7,24 +7,8 @@
 //! returned as thinking blocks. Effort lives inside the thinking state, because
 //! `between_tools` accepts only `high` and below and takes no other field.
 
+use crate::ThinkingDisplayWithUpdates;
 use crate::values::api_enum;
-
-api_enum! {
-    /// What Claude Sonnet 5.5 returns from adaptive thinking.
-    ///
-    /// `Updates` requires the `thinking-display-updates-2026-08-18` beta
-    /// header, which [`crate::request::Request::required_beta_features`]
-    /// infers from the selected value.
-    Sonnet5_5ThinkingDisplay {
-        /// Provider-safe reasoning summaries are returned.
-        Summarized => "summarized",
-        /// No reasoning text is returned. The documented default.
-        Omitted => "omitted",
-        /// Only short progress updates between tool calls are returned; private
-        /// reasoning remains hidden.
-        Updates => "updates",
-    }
-}
 
 api_enum! {
     /// How much work Claude Sonnet 5.5 spends with adaptive thinking.
@@ -85,7 +69,7 @@ impl Default for Sonnet5_5 {
     fn default() -> Self {
         Self {
             thinking: Sonnet5_5Thinking::Adaptive {
-                display: Sonnet5_5ThinkingDisplay::Omitted,
+                display: ThinkingDisplayWithUpdates::Omitted,
                 effort: Sonnet5_5Effort::High,
             },
         }
@@ -104,7 +88,7 @@ impl Sonnet5_5 {
     pub fn with_effort(mut self, effort: Sonnet5_5Effort) -> Self {
         let display = match self.thinking {
             Sonnet5_5Thinking::Adaptive { display, .. } => display,
-            Sonnet5_5Thinking::BetweenTools { .. } => Sonnet5_5ThinkingDisplay::Omitted,
+            Sonnet5_5Thinking::BetweenTools { .. } => ThinkingDisplayWithUpdates::Omitted,
         };
         self.thinking = Sonnet5_5Thinking::Adaptive { display, effort };
         self
@@ -112,7 +96,7 @@ impl Sonnet5_5 {
 
     /// Thinks adaptively with this display, keeping the effort where thinking
     /// was already adaptive and defaulting it to `high` otherwise.
-    pub fn with_adaptive_thinking(mut self, display: Sonnet5_5ThinkingDisplay) -> Self {
+    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplayWithUpdates) -> Self {
         let effort = match self.thinking {
             Sonnet5_5Thinking::Adaptive { effort, .. } => effort,
             Sonnet5_5Thinking::BetweenTools { .. } => Sonnet5_5Effort::High,
@@ -140,7 +124,7 @@ pub enum Sonnet5_5Thinking {
     /// Adaptive thinking, the state an omitted `thinking` field also produces.
     Adaptive {
         /// Which thinking text the provider returns.
-        display: Sonnet5_5ThinkingDisplay,
+        display: ThinkingDisplayWithUpdates,
         /// How much work to spend, over the full range.
         effort: Sonnet5_5Effort,
     },
