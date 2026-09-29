@@ -24,9 +24,10 @@ use crate::values::{BetaFeature, SystemBlockType, ToolReferenceType, api_enum};
 api_enum! {
     /// An effort level installed by a system message for later user turns.
     ///
-    /// Fable 5.1 accepts the complete range. Opus 5 accepts it while thinking is
-    /// on and narrows to `high` and below while thinking is off; the request
-    /// checks that cross-message relation when it first knows both facts.
+    /// Every level is accepted while thinking is on. While it is off, effort
+    /// cannot change mid-conversation, so an effort message must restate the
+    /// top-level level; the request checks that relation when it first knows
+    /// both facts.
     PerMessageEffort {
         /// The least work.
         Low => "low",

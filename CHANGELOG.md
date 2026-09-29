@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.15.0
+
+- With thinking off, `Request::new` refuses every effort-only message whose
+  level differs from the top-level effort. The effort documentation states that
+  with thinking off "effort can't change mid-conversation: a per-message
+  `output_config.effort` that differs from the level in effect returns a 400
+  error". Before this release Opus 5 with thinking off refused only levels above
+  `high`, and serialized a change within `low`..=`high` that the API answers
+  with `effort cannot change when thinking is disabled on this model`.
+- Measured first-party on 2026-09-29, the API is more permissive than its
+  documentation: it compares only the last two user turns, so it accepts a
+  change an earlier turn made and the final turn inherits, a level overwritten
+  before any user turn, and a trailing effort message. A 200 is not evidence of
+  legality, so the crate follows the documented rule and refuses all three.
+- The Opus 5 thinking-off live tests move to
+  `tests/live_effort_with_thinking_off.rs`, which adds a live 400 for a
+  final-turn change, a live 200 for a restated level, and a report of the
+  inherited change the API accepts.
+
+### Breaking: one refusal for any effort change while thinking is off
+
+`RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort }` is
+replaced by `RequestError::PerMessageEffortChangedWithThinkingOff { model, at,
+effort, in_effect }`. A level above `high` is one such change, since the
+top-level effort cannot exceed `high` with thinking off; `in_effect` is that
+top-level effort, and `model` names the model because the rule is no longer
+Opus 5's alone.
+
+**Migration.** Rename the variant and add the two fields to patterns:
+
+```text
+PerMessageEffortUnsupportedWithThinkingOff { at, effort }
+→ PerMessageEffortChangedWithThinkingOff { model, at, effort, in_effect }
+```
+
+To make a refused conversation sendable, either turn thinking on, or with
+thinking off push only effort messages that restate `in_effect`.
+
+  `anthropic` is now 0.15.0.
+
 ## 0.14.1
 
 - Every file's header now fits in 20 lines. The explanation a header used to

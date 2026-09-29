@@ -157,26 +157,54 @@ fn fable_5_updates_require_the_same_beta_as_fable_5_1() {
     assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");
 }
 
+/// With thinking off every effort message must restate the top-level effort,
+/// wherever it sits: before the first user turn, between turns, overwritten
+/// before it applies, or trailing after the last user turn.
 #[test]
-fn opus_5_thinking_off_rejects_later_effort_above_high() {
-    let mut ctx = Context::new(Opening::None);
-    ctx.push_effort(PerMessageEffort::Xhigh);
-    ctx.push_user_text("one");
-    let model = Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High);
-    assert_eq!(
-        Request::new(&ctx, model, 16).err(),
-        Some(RequestError::PerMessageEffortUnsupportedWithThinkingOff { at: 0, effort: PerMessageEffort::Xhigh })
-    );
+fn opus_5_thinking_off_refuses_every_effort_message_that_changes_the_level() {
+    let thinking_off = || Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::Low);
+    let refusal = |at, effort| {
+        Some(RequestError::PerMessageEffortChangedWithThinkingOff {
+            model: ModelId::Opus5,
+            at,
+            effort,
+            in_effect: PerMessageEffort::Low,
+        })
+    };
+
+    let mut above_high = Context::new(Opening::None);
+    above_high.push_effort(PerMessageEffort::Xhigh);
+    above_high.push_user_text("one");
+    assert_eq!(Request::new(&above_high, thinking_off(), 16).err(), refusal(0, PerMessageEffort::Xhigh));
+
+    let mut inherited = Context::new(Opening::None);
+    inherited.push_user_text("one");
+    inherited.push_assistant_text("ok");
+    inherited.push_effort(PerMessageEffort::Medium);
+    inherited.push_user_text("two");
+    inherited.push_assistant_text("ok");
+    inherited.push_user_text("three");
+    assert_eq!(Request::new(&inherited, thinking_off(), 16).err(), refusal(2, PerMessageEffort::Medium));
+    assert!(Request::new(&inherited, Model::opus_5(), 16).is_ok(), "thinking on lets effort change");
+
     let mut overwritten = Context::new(Opening::None);
-    overwritten.push_effort(PerMessageEffort::Max);
+    overwritten.push_effort(PerMessageEffort::Medium);
     overwritten.push_effort(PerMessageEffort::Low);
     overwritten.push_user_text("one");
-    assert!(Request::new(&overwritten, Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High), 16).is_ok());
+    assert_eq!(Request::new(&overwritten, thinking_off(), 16).err(), refusal(0, PerMessageEffort::Medium));
 
-    let mut valid = Context::new(Opening::None);
-    valid.push_effort(PerMessageEffort::High);
-    valid.push_user_text("one");
-    assert!(Request::new(&valid, Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High), 16).is_ok());
+    let mut trailing = Context::new(Opening::None);
+    trailing.push_user_text("one");
+    trailing.push_effort(PerMessageEffort::High);
+    assert_eq!(Request::new(&trailing, thinking_off(), 16).err(), refusal(1, PerMessageEffort::High));
+
+    let mut restated = Context::new(Opening::None);
+    restated.push_effort(PerMessageEffort::Low);
+    restated.push_user_text("one");
+    restated.push_assistant_text("ok");
+    restated.push_effort(PerMessageEffort::Low);
+    restated.push_user_text("two");
+    assert!(Request::new(&restated, thinking_off(), 16).is_ok(), "restating the level in effect changes nothing");
 }
 
 #[test]

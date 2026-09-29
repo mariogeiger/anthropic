@@ -62,7 +62,7 @@ use anthropic::request::{
 };
 use anthropic::response::Response;
 use anthropic::system::{PerMessageEffort, SystemBlock, ToolReference};
-use anthropic::{BetaFeature, CacheTtl, MESSAGES_PATH, PrefixMismatchBehavior, ServiceTier, ThinkingDisplay};
+use anthropic::{CacheTtl, MESSAGES_PATH, PrefixMismatchBehavior, ServiceTier, ThinkingDisplay};
 use serde_json::{Value, json};
 
 // ── Harness ──────────────────────────────────────────────────────────────────
@@ -762,24 +762,6 @@ fn live_400_fable_5_1_beta_controls_require_their_headers() {
         let message = assert_400(code, &response);
         assert!(message.contains(field), "unexpected message for {field}: {message}");
     }
-}
-
-#[test]
-fn live_400_opus_5_thinking_off_rejects_per_message_xhigh() {
-    let key = key_or_skip!();
-    let body = json!({
-        "model": "claude-opus-5", "max_tokens": 1,
-        "thinking": {"type": "disabled"},
-        "output_config": {"effort": "high"},
-        "messages": [
-            {"role": "system", "content": [], "output_config": {"effort": "xhigh"}},
-            {"role": "user", "content": "hi"}
-        ]
-    });
-    let (code, response) =
-        post_with_beta(MESSAGES_PATH, &body, &key, Some(BetaFeature::MidConversationOutputConfig.as_str()));
-    let message = assert_400(code, &response);
-    assert!(message.contains("not supported when thinking is disabled"), "{message}");
 }
 
 #[test]

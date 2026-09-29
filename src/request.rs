@@ -187,22 +187,33 @@ pub enum RequestError {
         tools: usize,
     },
     /// The conversation changes effort inside `messages`, but the selected model
-    /// accepts only top-level effort. Fable 5.1 and Opus 5 are the modeled
-    /// per-message-effort models.
+    /// accepts only top-level effort; [`ModelId::accepts_per_message_effort`]
+    /// names the models that accept it.
     PerMessageEffortUnsupported {
         /// The model that cannot apply the change.
         model: ModelId,
         /// Index of the effort-only system message.
         at: usize,
     },
-    /// Opus 5 has thinking disabled, but a later effort-only message raises the
-    /// level above `high`. The API accepts `xhigh` and `max` only with thinking
-    /// enabled.
-    PerMessageEffortUnsupportedWithThinkingOff {
+    /// Thinking is off, and an effort-only message sets a level other than the
+    /// top-level effort. The documentation states that with thinking off "effort
+    /// can't change mid-conversation: a per-message `output_config.effort` that
+    /// differs from the level in effect returns a 400 error".
+    ///
+    /// The whole conversation is checked, not only the turns the API is seen to
+    /// compare. Measured first-party on 2026-09-29, the API refuses a change that
+    /// reaches the final user turn but accepts one an earlier turn made and the
+    /// final turn inherits; that acceptance is not the documented rule, so a
+    /// conversation relying on it is refused here.
+    PerMessageEffortChangedWithThinkingOff {
+        /// The model whose thinking is off.
+        model: ModelId,
         /// Index of the effort-only message.
         at: usize,
-        /// The rejected level.
+        /// The level that message sets.
         effort: PerMessageEffort,
+        /// The top-level effort, which every effort message must restate.
+        in_effect: PerMessageEffort,
     },
     /// The conversation holds a mid-conversation system message and this model
     /// does not accept one. The documentation states the feature is available on
@@ -270,10 +281,13 @@ impl std::fmt::Display for RequestError {
                 "{} does not accept per-message effort; remove the effort change at index {at}",
                 model.api_id()
             ),
-            RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort } => write!(
+            RequestError::PerMessageEffortChangedWithThinkingOff { model, at, effort, in_effect } => write!(
                 f,
-                "per-message effort {} at index {at} is unsupported while Opus 5 thinking is off",
-                effort.as_str()
+                "per-message effort {} at index {at} differs from the {} in effect, \
+                 which {} cannot change while thinking is off",
+                effort.as_str(),
+                in_effect.as_str(),
+                model.api_id()
             ),
             RequestError::MidConversationSystemMessageUnsupported { model, at } => write!(
                 f,
@@ -339,10 +353,15 @@ impl<'a> Request<'a> {
         {
             return Err(RequestError::PerMessageEffortUnsupported { model: model.id(), at });
         }
-        if matches!(&model, Model::Opus5(Opus5 { thinking: Opus5Thinking::Disabled { .. } }))
-            && let Some((at, effort)) = context.first_effort_above_high_applied_to_user()
+        if let Some(in_effect) = thinking_off_effort(&model)
+            && let Some((at, effort)) = context.first_effort_differing_from(in_effect)
         {
-            return Err(RequestError::PerMessageEffortUnsupportedWithThinkingOff { at, effort });
+            return Err(RequestError::PerMessageEffortChangedWithThinkingOff {
+                model: model.id(),
+                at,
+                effort,
+                in_effect,
+            });
         }
         let tools = context.tools();
         if !tools.is_empty() && tools.iter().all(ToolDefinition::is_deferred) {
@@ -545,6 +564,22 @@ impl<'a> Request<'a> {
             (_, BetaFeature::ThinkingBindingControls) => self.prefix_mismatch_behavior.is_some(),
             _ => false,
         }
+    }
+}
+
+/// The top-level effort of a configuration whose thinking is off, on a model
+/// that accepts per-message effort; `None` where thinking is on.
+///
+/// With thinking off effort cannot change mid-conversation, so this is the
+/// level every effort message must restate.
+fn thinking_off_effort(model: &Model) -> Option<PerMessageEffort> {
+    match model {
+        Model::Opus5(Opus5 { thinking: Opus5Thinking::Disabled { effort } }) => Some(match effort {
+            Opus5ThinkingOffEffort::Low => PerMessageEffort::Low,
+            Opus5ThinkingOffEffort::Medium => PerMessageEffort::Medium,
+            Opus5ThinkingOffEffort::High => PerMessageEffort::High,
+        }),
+        _ => None,
     }
 }
 

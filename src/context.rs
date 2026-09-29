@@ -793,24 +793,16 @@ impl Context {
         self.messages.iter().position(|message| matches!(message, Message::System(SystemMessage::Effort(_))))
     }
 
-    /// The first effort above `high` that reaches a user turn.
+    /// The first effort message whose level differs from `in_effect`.
     ///
-    /// A later effort message before that user replaces the pending level, so an
-    /// `xhigh` immediately overwritten by `low` never applies and is accepted.
-    pub(crate) fn first_effort_above_high_applied_to_user(&self) -> Option<(usize, PerMessageEffort)> {
-        let mut effective = None;
-        for (at, message) in self.messages.iter().enumerate() {
-            match message {
-                Message::System(SystemMessage::Effort(effort)) => effective = Some((at, *effort)),
-                Message::User(_) => {
-                    if let Some((at, effort @ (PerMessageEffort::Xhigh | PerMessageEffort::Max))) = effective {
-                        return Some((at, effort));
-                    }
-                }
-                Message::Assistant(_) | Message::System(_) => {}
-            }
-        }
-        None
+    /// With thinking off, effort cannot change mid-conversation: the level in
+    /// effect is the top-level one throughout, so each effort message must restate
+    /// it. Returns the message's index and the level it sets.
+    pub(crate) fn first_effort_differing_from(&self, in_effect: PerMessageEffort) -> Option<(usize, PerMessageEffort)> {
+        self.messages.iter().enumerate().find_map(|(at, message)| match message {
+            Message::System(SystemMessage::Effort(effort)) if *effort != in_effect => Some((at, *effort)),
+            _ => None,
+        })
     }
 
     pub(crate) fn requires_beta(&self, feature: BetaFeature) -> bool {
