@@ -48,10 +48,11 @@ accepted parameters — never widening an existing one.
 
 The subsets are not cosmetically different. Thinking is always on for Opus 5.5 and Fable 5 and
 has no off state; on Opus 4.8 "off" is an *omitted* `thinking` field; on Opus 5
-and Sonnet 5 an omitted field leaves thinking *on*, so off must be stated. Opus
-5.5 never has an off state at all. Opus 5
-makes the accepted effort range depend on whether thinking is on, which is why
-its effort lives *inside* its thinking state rather than beside it.
+and Sonnet 5 an omitted field leaves thinking *on*, so off must be stated; on
+Sonnet 5.5 off is stated as `between_tools`, because `disabled` is refused. Opus
+5.5 never has an off state at all. Opus 5 and Sonnet 5.5
+make the accepted effort range depend on whether thinking is on, which is why
+their effort lives *inside* their thinking state rather than beside it.
 
 Mutually exclusive settings are sum types, never two optional fields a caller
 must keep in sync.

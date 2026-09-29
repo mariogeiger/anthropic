@@ -17,7 +17,10 @@
 // `fable-5-1-binding.sse` and `fable-5-1-thinking-dropped.json` are first-party
 // Fable 5.1 responses captured on 2026-09-03. The first reports a clean check;
 // the second reports a signed thinking block dropped after its system prefix
-// changed.
+// changed. `sonnet-5-5-between-tools.sse` and `sonnet-5-5-refusal.json` are
+// first-party Sonnet 5.5 responses captured on 2026-09-29: the second turn of a
+// tool loop with `between_tools`, and the refusal of a benign request that asked
+// for a paragraph explaining the model's reasoning before each tool call.
 //
 // The trimmed files had long runs of `thinking_delta` and `text_delta` frames
 // cut to the first few per block, and signature values cut to their first 40
@@ -30,6 +33,18 @@ use anthropic::response::Response;
 use anthropic::settle::{Outcome, SettleError, Settling};
 use anthropic::stream::StreamEvent;
 use anthropic::values::StopReason;
+
+/// Every captured stream, for the properties that hold of all of them.
+const STREAMS: [&str; 8] = [
+    TOOL_USE,
+    THINKING_SUMMARIZED,
+    THINKING_OMITTED,
+    CACHE_WRITE,
+    CACHE_READ,
+    CITATIONS,
+    FABLE_BINDING,
+    SONNET_BETWEEN_TOOLS,
+];
 
 /// Feeds every `data:` line of a captured body into an accumulator.
 fn accumulate(body: &str) -> Settling {
@@ -51,6 +66,39 @@ const CITATIONS: &str = include_str!("captured/citations.sse");
 const FABLE_BINDING: &str = include_str!("captured/fable-5-1-binding.sse");
 const FABLE_DROPPED: &str = include_str!("captured/fable-5-1-thinking-dropped.json");
 const RESPONSE: &str = include_str!("captured/response.json");
+const SONNET_BETWEEN_TOOLS: &str = include_str!("captured/sonnet-5-5-between-tools.sse");
+const SONNET_REFUSAL: &str = include_str!("captured/sonnet-5-5-refusal.json");
+
+/// With `between_tools` the model does not think before responding, yet the
+/// progress update it writes between tool calls arrives as a signed thinking
+/// block, which the next request must pass back unchanged.
+#[test]
+fn a_between_tools_progress_update_arrives_as_a_signed_thinking_block() {
+    let settled = accumulate(SONNET_BETWEEN_TOOLS).settle().unwrap();
+    assert_eq!(settled.model, "claude-sonnet-5-5");
+    assert_eq!(settled.stop_reason(), Some(StopReason::ToolUse));
+    let StreamedBlock::Thinking { thinking, signature } = &settled.blocks[0] else {
+        panic!("the progress update should be the first block")
+    };
+    assert!(thinking.starts_with("Paris looks great"), "{thinking}");
+    assert!(!signature.is_empty(), "signed, so it can be replayed");
+    assert_eq!(settled.text(), "", "the note is thinking, not text");
+    let calls: Vec<_> = settled.tool_calls().collect();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].name, "get_weather");
+}
+
+/// A refusal is a finished message with no content, and its category is one this
+/// crate models.
+#[test]
+fn a_first_party_refusal_names_its_category() {
+    let response = Response::decode(SONNET_REFUSAL).unwrap();
+    assert_eq!(response.stop_reason, Some(StopReason::Refusal));
+    assert!(response.blocks.is_empty());
+    let refusal = response.refusal.unwrap();
+    assert_eq!(refusal.category, Some(anthropic::values::RefusalCategory::ReasoningExtraction));
+    assert_eq!(refusal.raw_category, "reasoning_extraction");
+}
 
 #[test]
 fn a_first_party_binding_stream_reports_that_no_input_was_dropped() {
@@ -240,7 +288,7 @@ fn a_captured_response_body_decodes() {
 /// against every prefix of real traffic rather than one hand-made case.
 #[test]
 fn no_prefix_of_a_captured_stream_settles_before_its_terminal_frame() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
+    for body in STREAMS {
         let payloads: Vec<&str> = body.lines().filter_map(data_payload).collect();
         for cut in 0..payloads.len() {
             let mut settling = Settling::new();
@@ -329,14 +377,15 @@ fn unknown_events_interleaved_through_a_captured_stream_change_nothing() {
 }
 
 /// Every frame of every captured body decodes, and none of them is an
-/// `Unmodeled` event: the modeled set covers real traffic completely.
+/// `Unmodeled` event but `ping`, which is left unmodeled by design: the modeled
+/// set covers real traffic completely.
 #[test]
 fn every_captured_frame_decodes_into_a_modeled_event() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
+    for body in STREAMS {
         for payload in body.lines().filter_map(data_payload) {
             let event = StreamEvent::decode(payload).expect(payload);
             assert!(
-                !matches!(event, StreamEvent::Unmodeled { .. }),
+                !matches!(event, StreamEvent::Unmodeled { .. }) || event.kind() == "ping",
                 "captured traffic contained an unmodeled event: {}",
                 event.kind()
             );
@@ -349,7 +398,7 @@ fn every_captured_frame_decodes_into_a_modeled_event() {
 /// checking once rather than trusting.
 #[test]
 fn the_sse_event_names_agree_with_the_payload_types() {
-    for body in [TOOL_USE, THINKING_SUMMARIZED, THINKING_OMITTED, CACHE_WRITE, CACHE_READ, CITATIONS, FABLE_BINDING] {
+    for body in STREAMS {
         let mut named: Option<&str> = None;
         for line in body.lines() {
             if let Some(name) = line.strip_prefix("event: ") {

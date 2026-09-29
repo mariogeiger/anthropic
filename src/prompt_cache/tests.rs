@@ -6,7 +6,10 @@ use super::*;
 use crate::block::{ContentBlock, ImageSource};
 use crate::context::{CacheSlot, Context, Opening, Tool};
 use crate::request::Request;
-use crate::request::{Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Sonnet5, Sonnet5Effort};
+use crate::request::{
+    Model, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Sonnet5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort,
+    Sonnet5Effort,
+};
 use crate::tool_choice::ToolChoice;
 
 const T0: Duration = Duration::ZERO;
@@ -315,6 +318,31 @@ fn effort_renders_where_the_model_renders_it() {
     cache.serve(&CacheKeys::of(&Request::new(&context, low, 1).unwrap()), T0, &sizes).unwrap();
     let served = cache.serve(&CacheKeys::of(&Request::new(&context, high, 1).unwrap()), secs(1), &sizes).unwrap();
     assert_eq!(served.read, None);
+}
+
+/// Sonnet 5.5 renders its effort after every cacheable position but its thinking
+/// mode before the tools, measured first-party on 2026-09-29.
+#[test]
+fn sonnet_5_5_renders_effort_and_thinking_mode_at_different_levels() {
+    let mut context = Context::new(Opening::instruction("system"))
+        .with_tools_cached(CacheSlot::S0, vec![Tool::new("t", json!({}))], CacheTtl::FiveMinutes)
+        .unwrap();
+    context.push_user_text("first");
+    context.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
+    let sizes = tokens(&[1100, 2100], 2104);
+    let serve_after = |first: Model, second: Model| {
+        let mut cache = PromptCache::new();
+        cache.serve(&CacheKeys::of(&Request::new(&context, first, 1).unwrap()), T0, &sizes).unwrap();
+        cache.serve(&CacheKeys::of(&Request::new(&context, second, 1).unwrap()), secs(1), &sizes).unwrap().read
+    };
+    let low = Model::sonnet_5_5().with_effort(Sonnet5_5Effort::Low);
+    let high = Model::sonnet_5_5().with_effort(Sonnet5_5Effort::High);
+    assert_eq!(
+        serve_after(low.into(), high.into()).map(|r| r.position),
+        Some(Position::Message { message: 0, block: 0 })
+    );
+    let between_tools = Model::sonnet_5_5().with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::High);
+    assert_eq!(serve_after(Model::sonnet_5_5().into(), between_tools.into()), None);
 }
 
 #[test]

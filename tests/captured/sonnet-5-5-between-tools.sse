@@ -1,0 +1,87 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-5-5","id":"msg_011CfYRtccLfPomttrsLVhxQ","type":"message","role":"assistant","content":[],"container":null,"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":542,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":285,"service_tier":"standard","inference_geo":"global"},"diagnostics":null}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}      }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Paris loo"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ks great"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" for"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" the"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" trip—18°C and s"}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"unny, ideal for out"}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"door s"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ightseeing with"}           }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" just a light jacket for ev"}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"enings. Now chec"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"king London's"}   }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" we"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ather so"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" I can give you a direct com"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"parison."}               }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\n"}              }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQS7AoKEQgSGAI4AUIJbmFycmF0aW9uEgyrj4E+zgXavqgnSV4aDI/GBwjPT/C/6L7hACIw3376NyaYSG2eNHHKDUh2kJwmtP0DcWoIwDlini5B5wukoQOvwPx5d2UBu/zUBiE3KogKtKO3M35sPjzvFS2Io4H+QXhlSdbr3+5o86UXfknXnqRnmBOF9mLGfWzDvhtxQPQ6PGgQ1holoEBXkG/+n1oUIX0nAWTXO8c82HYYZJGRSe5FbkcAC4l6/uEQibGrtoWvFPkw4Z+KKIPYNDfbqplMIizO+V8tNAxXYygosuDs4Mz/rJSLtMoLvLUky2Cog3iC9QgEeV/AAKy/oIgZnE/Gap8/UImKu+Mexlre2VJlA0jsSwk6npufxuRiJ5+zOtx2BzUDJ0eBf7ZPOulLhp8YRgz5ijrJ2B775vVSu7D3E4Eb7tAjaYDdkKnkme22A/RbIFt2XKdh/iqsqbdfsVtd7yh2m4s2IE6mWDF7Y+ne0yLN4DhxmRnLqK/u6xbGFL/Srds0FxqXDSSCZs6+2egGw6yCjlJ1OQh9YTRVnlsrhW3rcLhw95OIr5+JCTbgnK4FAlD3mxcKF6muD0gTmATNO7POOosIbeItVIu/A1/M8b42qyDI76dq4UwIjl66i0s/OIri3lKnAJc5LbNFmpDM4d4p33VpbFD7Wfiz6nYIzvO/1RfmN5Odja7fT7XVzhCPMwHBhiIuoCUtQMtVhsE0iqC1bL1hsY3HRSmJpLKGX7tRNxnYMHIC7XJ0jBSyHpg9NCRgHWgl2DO2Qcopy1ZAVzFNGB15OfCKL9UomPCkBzZahMwI/ycX+UbnAccX/UEZTCRC7ybbYEMgqaRLP5vAAMUfuyBo/Vf6ogu2glipBWY2lZTE9bjHF+OhOg7afWovtwalMc+T3qYc1G18WLfjfO5RLzC2XDU2jhtAvaXpLBCBRUtozJTwxTgCi5Ysv6d0L9oGoX18fSFJdyyUP93dN2QjdoG25GSLQjcgXbMVWBAtdHvOuCeH7BXkgaSyqvcBl74aNz+N4964IYGxHwZT5LyiROSTkA9hDX78ZljEmZiSIT4Z/I78bib8IYRTTMfcLza1n2hYu7hOWucYKGTXXc3bh84t3bItU+sH7ZeKqUuX65lMoypVQBQIwpGeXkC6YHdWRyYjAhpLHnhZNMOTsnHozZ9eGcEJ4BcRaQFOqAa8d5axY3qq5ipRNqaWtKg3L6ZrxntrttiIg6ECcdPrJyTSksRNTX+uPf3aDypLpveoExCOLqugB6HXZekzsF0/t96hq7bW/to6TDNRzDWOM4iqLkxjWr/xwIsOTK44SfJCqsZB5MF/OEmYRyU9PdiUBee9aitgQprqUgwyCnXYJLl13XT2DDyVusociuhL1ogQomf88XFd9hcEzyFOtmy9Y0lw8kIxaVA75G7LqjEOF8RL6B/gI0j5+3tlQm0Uv0SCv4x4aKi8ULWCARVKQSzoPYl1WGWBXvEUBagtZBaPhveLcRdhFJCWG2PGJSLXiRBTqcJZFme2rsKAPZ7L0A4i8oKsZ4NPK4hrAfNOTT5HkAQOPVgFrTAZzvLvDdNTEx7NuhHYW1GP9OwwWNvx20LnYJDuNQTl8qSRsi7Ek4MY031hQlX5JZcdlm9Tbmhmgl2OUo+NMXxW3Ke3DMo7RuIhLH3L0H+yl3EdArC9zKEkdfqvSc5lOCDrVsr5Q33biVrLfcQfZWb7xoR8c73m9j7QphoT8EWsCT4US30p5xGqgI2Bg+DjISA5I17Glk/D6/dpdZfqnViUu5Q/3SrYYBqFsCaGa9zvRTTgFe4niYFZbc1EIHDPs1mDOam9HKX4K8/DBi69UAiwUBgB"}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_013Pdai5oAhW3X5nUjeiE1AK","name":"get_weather","input":{},"caller":{"type":"direct"}}          }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}      }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":": \"Lond"}       }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"on\"}"}       }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":542,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":315,"output_tokens_details":{"thinking_tokens":268}}  }
+
+event: message_stop
+data: {"type":"message_stop"        }
+

@@ -18,12 +18,12 @@ use crate::CacheTtl;
 use crate::model::ModelId;
 use crate::request::Request;
 
-/// Where a model renders its thinking configuration and top-level effort.
+/// Where a model renders one part of its configuration.
 ///
 /// Documented as model-specific without a table, so each value was measured
-/// first-party on 2026-09-25 by changing only effort, or only the thinking mode,
-/// between two requests with a breakpoint on the tools, the system prompt and the
-/// last message, and reading which of the three still hit.
+/// first-party by changing only effort, or only the thinking mode, between two
+/// requests with a breakpoint on the tools, the system prompt and the last
+/// message, and reading which of the three still hit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigurationLevel {
     /// Ahead of the tools: every breakpoint misses after a change.
@@ -35,12 +35,21 @@ enum ConfigurationLevel {
     AfterPrefix,
 }
 
-fn configuration_level(model: ModelId) -> ConfigurationLevel {
+/// Where a model renders its thinking mode, and where its top-level effort.
+///
+/// Measured on 2026-09-25, the two share a level on every model but Sonnet 5.5,
+/// measured on 2026-09-29: its effort renders after every cacheable position,
+/// while switching between adaptive and `between_tools` misses all three.
+/// Opus 5.5 and Fable 5.1 have one thinking mode, so its level is unobservable
+/// and taken to be their effort's.
+fn configuration_levels(model: ModelId) -> (ConfigurationLevel, ConfigurationLevel) {
+    use ConfigurationLevel::{AfterPrefix, BeforeMessages, BeforeTools};
     match model {
-        ModelId::Opus5_5 | ModelId::Fable5_1 => ConfigurationLevel::AfterPrefix,
-        ModelId::Haiku4_5 => ConfigurationLevel::BeforeMessages,
+        ModelId::Opus5_5 | ModelId::Fable5_1 => (AfterPrefix, AfterPrefix),
+        ModelId::Sonnet5_5 => (BeforeTools, AfterPrefix),
+        ModelId::Haiku4_5 => (BeforeMessages, BeforeMessages),
         ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 | ModelId::Sonnet5 | ModelId::Sonnet4_6 => {
-            ConfigurationLevel::BeforeTools
+            (BeforeTools, BeforeTools)
         }
     }
 }
@@ -97,9 +106,15 @@ impl Renderer {
 pub(super) fn render(request: &Request<'_>) -> Vec<Cut> {
     let body = serde_json::to_value(request).expect("a request serializes to JSON");
     let mut renderer = Renderer { hasher: Sha256::new(), length: 0, cuts: Vec::new(), run: None };
-    let level = configuration_level(request.model().id());
-    let configuration = configuration(&body);
-    let at = |wanted: ConfigurationLevel| if level == wanted { configuration.clone() } else { Value::Null };
+    let (thinking_level, effort_level) = configuration_levels(request.model().id());
+    let (thinking, effort) = (Value::Object(thinking(&body)), &body["output_config"]["effort"]);
+    let at = |wanted: ConfigurationLevel| {
+        let part = |level, value: &Value| if level == wanted { value.clone() } else { Value::Null };
+        match (part(thinking_level, &thinking), part(effort_level, effort)) {
+            (Value::Null, Value::Null) => Value::Null,
+            (thinking, effort) => json!({ "thinking": thinking, "effort": effort }),
+        }
+    };
 
     renderer.header(json!({
         "model": body["model"],
@@ -153,9 +168,9 @@ fn array(value: &Value) -> &[Value] {
     value.as_array().map(Vec::as_slice).unwrap_or_default()
 }
 
-/// The documented rendered part of the thinking configuration — its mode and
-/// budget, not how its output is displayed — and the resolved effort.
-fn configuration(body: &Value) -> Value {
+/// The documented rendered part of the thinking configuration: its mode and
+/// budget, not how its output is displayed.
+fn thinking(body: &Value) -> Map<String, Value> {
     let thinking = &body["thinking"];
     let mut rendered = Map::new();
     for field in ["type", "budget_tokens"] {
@@ -163,7 +178,7 @@ fn configuration(body: &Value) -> Value {
             rendered.insert(field.to_owned(), value.clone());
         }
     }
-    json!({ "thinking": rendered, "effort": body["output_config"]["effort"] })
+    rendered
 }
 
 /// A turn-scoped system message is gone from the prompt once a user message

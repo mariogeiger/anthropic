@@ -249,13 +249,14 @@ fn beta_features_are_inferred_once_in_wire_order() {
 #[test]
 fn always_on_models_refuse_forced_tool_choice_before_serialization() {
     let ctx = Context::new(Opening::None);
-    for model in [Model::from(Model::opus_5_5()), Model::from(Model::fable_5_1())] {
+    for model in [Model::from(Model::opus_5_5()), Model::from(Model::sonnet_5_5()), Model::from(Model::fable_5_1())] {
         let id = model.id();
         for choice in [ToolChoice::any(), ToolChoice::tool("read")] {
             let error = Request::new(
                 &ctx,
                 match id {
                     ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Sonnet5_5 => Model::from(Model::sonnet_5_5()),
                     ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
                     _ => unreachable!(),
                 },
@@ -272,6 +273,7 @@ fn always_on_models_refuse_forced_tool_choice_before_serialization() {
                 &ctx,
                 match id {
                     ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Sonnet5_5 => Model::from(Model::sonnet_5_5()),
                     ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
                     _ => unreachable!(),
                 },
@@ -286,6 +288,7 @@ fn always_on_models_refuse_forced_tool_choice_before_serialization() {
                 &ctx,
                 match id {
                     ModelId::Opus5_5 => Model::from(Model::opus_5_5()),
+                    ModelId::Sonnet5_5 => Model::from(Model::sonnet_5_5()),
                     ModelId::Fable5_1 => Model::from(Model::fable_5_1()),
                     _ => unreachable!(),
                 },
@@ -402,9 +405,94 @@ fn sonnet_5_model_id() {
 }
 
 #[test]
+fn sonnet_5_5_default_is_explicit_adaptive_thinking_at_high_effort() {
+    let v = req(Model::sonnet_5_5());
+    assert_eq!(v["model"], "claude-sonnet-5-5");
+    assert!(v.get("temperature").is_none(), "temperature is refused as deprecated");
+    assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "omitted"}));
+    assert_eq!(v["output_config"]["effort"], "high");
+    let m: Model = Model::sonnet_5_5().into();
+    assert_eq!(m.id(), ModelId::Sonnet5_5);
+    assert_eq!(ModelId::Sonnet5_5.api_id(), "claude-sonnet-5-5");
+}
+
+#[test]
+fn sonnet_5_5_between_tools_is_a_bare_tag_with_its_own_effort() {
+    let v = req(Model::sonnet_5_5().with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::Medium));
+    assert_eq!(v["thinking"], serde_json::json!({"type": "between_tools"}));
+    assert_eq!(v["output_config"]["effort"], "medium");
+    let v = req(Model::sonnet_5_5()
+        .with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::Low)
+        .with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Summarized));
+    assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "summarized"}));
+    assert_eq!(v["output_config"]["effort"], "high", "leaving between_tools restores the documented default");
+    let v = req(Model::sonnet_5_5()
+        .with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Summarized)
+        .with_effort(Sonnet5_5Effort::Max));
+    assert_eq!(v["thinking"]["display"], "summarized", "effort keeps the display");
+    assert_eq!(v["output_config"]["effort"], "max");
+}
+
+#[test]
+fn sonnet_5_5_updates_display_requires_its_beta() {
+    let ctx = Context::new(Opening::None);
+    let updates = Model::sonnet_5_5().with_adaptive_thinking(Sonnet5_5ThinkingDisplay::Updates);
+    let request = Request::new(&ctx, updates, 16).unwrap();
+    assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
+    assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");
+    assert_eq!(Request::new(&ctx, Model::sonnet_5_5(), 16).unwrap().required_beta_features().count(), 0);
+}
+
+#[test]
+fn sonnet_5_5_binds_thinking_blocks_only_while_thinking_adaptively() {
+    let ctx = Context::new(Opening::None);
+    let v = serde_json::to_value(
+        Request::new(&ctx, Model::sonnet_5_5(), 16)
+            .unwrap()
+            .with_prefix_mismatch_behavior(PrefixMismatchBehavior::DropBlock)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(v["thinking"]["block_binding"]["prefix_mismatch_behavior"], "drop_block");
+    let between_tools = Model::sonnet_5_5().with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::High);
+    assert_eq!(
+        Request::new(&ctx, between_tools, 16)
+            .unwrap()
+            .with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error)
+            .err(),
+        Some(RequestError::ThinkingBindingWithoutThinking { model: ModelId::Sonnet5_5 })
+    );
+}
+
+#[test]
+fn sonnet_5_5_between_tools_refuses_an_effort_change() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("one");
+    ctx.push_assistant_text("ok");
+    ctx.push_effort(PerMessageEffort::Low);
+    ctx.push_user_text("two");
+    let between_tools = || Model::sonnet_5_5().with_thinking_between_tools(Sonnet5_5BetweenToolsEffort::Medium);
+    assert_eq!(
+        Request::new(&ctx, between_tools(), 16).err(),
+        Some(RequestError::PerMessageEffortChangedWithThinkingOff {
+            model: ModelId::Sonnet5_5,
+            at: 2,
+            effort: PerMessageEffort::Low,
+            in_effect: PerMessageEffort::Medium,
+        })
+    );
+    assert!(Request::new(&ctx, Model::sonnet_5_5(), 16).is_ok(), "adaptive thinking lets effort change");
+    let mut system = Context::new(Opening::None);
+    system.push_user_text("one");
+    system.push_system_text("be brief").unwrap();
+    assert!(Request::new(&system, between_tools(), 16).is_ok(), "mid-conversation system messages are accepted");
+}
+
+#[test]
 fn min_cacheable_prefix_tokens() {
     assert_eq!(ModelId::Fable5.min_cacheable_prefix_tokens(), 512);
     assert_eq!(ModelId::Opus4_8.min_cacheable_prefix_tokens(), 1_024);
+    assert_eq!(ModelId::Sonnet5_5.min_cacheable_prefix_tokens(), 512);
     assert_eq!(ModelId::Sonnet5.min_cacheable_prefix_tokens(), 1_024);
     assert_eq!(ModelId::Sonnet4_6.min_cacheable_prefix_tokens(), 1_024);
     assert_eq!(ModelId::Haiku4_5.min_cacheable_prefix_tokens(), 4_096);
@@ -417,6 +505,14 @@ fn min_cacheable_prefix_tokens() {
 fn model_constants() {
     assert_eq!(ModelId::Opus4_8.context_window_tokens(), 1_000_000);
     assert_eq!(ModelId::Haiku4_5.context_window_tokens(), 200_000);
+    assert_eq!(ModelId::Sonnet5_5.context_window_tokens(), 1_000_000);
+    assert_eq!(ModelId::Sonnet5_5.max_output_tokens(), 128_000);
+    assert_eq!(ModelId::Sonnet5_5.knowledge_cutoff(), YearMonth::new(2026, Month::June));
+    assert_eq!(ModelId::Sonnet5_5.training_cutoff(), YearMonth::new(2026, Month::June));
+    assert_eq!(ModelId::Sonnet5_5.price_per_mtok(), ModelId::Sonnet5.price_per_mtok());
+    assert!(ModelId::Sonnet5_5.accepts_mid_conversation_system_message());
+    assert!(ModelId::Sonnet5_5.accepts_per_message_effort());
+    assert!(!ModelId::Sonnet5_5.accepts_forced_tool_choice());
     assert_eq!(ModelId::Sonnet5.max_output_tokens(), 128_000);
     assert_eq!(ModelId::Haiku4_5.max_output_tokens(), 64_000);
     assert_eq!(ModelId::Sonnet5.knowledge_cutoff(), YearMonth::new(2026, Month::January));

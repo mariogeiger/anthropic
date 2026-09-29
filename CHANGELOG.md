@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.16.0
+
+- Claude Sonnet 5.5 is now a first-class model: `Model::sonnet_5_5`,
+  `Sonnet5_5`, `Sonnet5_5Thinking`, `Sonnet5_5Effort`,
+  `Sonnet5_5BetweenToolsEffort`, `Sonnet5_5ThinkingDisplay`, and
+  `ModelId::Sonnet5_5`. The emitted model ID is `claude-sonnet-5-5`.
+- Its thinking is adaptive, with all five effort levels and omitted, summarized
+  or beta progress-update display, or `between_tools`, its off state: no
+  thinking before responding, and progress updates between tool calls returned
+  as thinking blocks. `between_tools` carries only `low`, `medium` and `high`
+  and no display, the only shape the API accepts. There is no `disabled`,
+  fixed-budget, temperature, or prefill path, because the API refuses each.
+  `ThinkingType::BetweenTools` is its wire tag.
+- `Request::new` applies the thinking-off effort rule of 0.15.0 to
+  `between_tools`, `with_tool_choice` refuses a forced call, and
+  `with_prefix_mismatch_behavior` refuses `between_tools`, whose object takes no
+  `block_binding`.
+- Documented facts are recorded beside the other models: 1M-token context,
+  128K maximum output, 512-token cache minimum, June 2026 knowledge and
+  training cutoffs, and $2/$10 input/output plus $0.20 cache-read pricing.
+  Mid-conversation system messages and per-message effort are supported.
+- `PromptCache` renders Sonnet 5.5's effort after every cacheable position and
+  its thinking mode before the tools, measured first-party on 2026-09-29: an
+  effort change read all three breakpoints, a switch between adaptive and
+  `between_tools` read none, and a display change read all three. Every other
+  model renders the two at one level, and its keys are unchanged.
+- First-party probes on 2026-09-29 returned 200 for typed max-effort,
+  `between_tools` at each accepted effort, `updates` display with
+  `block_binding`, and a restated per-message effort beside a system message,
+  and the documented 400s for `disabled`, a fixed budget, `between_tools` at
+  `xhigh` or with `display`, an effort change under `between_tools`,
+  `temperature`, forced tool choice, and prefill. Two captures join
+  `tests/captured/`: a `between_tools` progress update streamed as a signed
+  thinking block before a tool call, and a `reasoning_extraction` refusal of a
+  benign request to explain the model's reasoning before each tool call.
+- Where the wire disagrees with the documentation: the documented `disabled`
+  refusal reads `"thinking.type.disabled" is not supported for this model. Use
+  "thinking.type.between_tools"`, while the API answers `To turn thinking off on
+  this model, send "thinking": {"type": "between_tools"} instead of {"type":
+  "disabled"}`, on `count_tokens` too. Real first-party streams carry `ping`
+  frames, which decode as `StreamEvent::Unmodeled` by design.
+- The Opus 5 parameters moved to `model/opus_5.rs`, keeping `model.rs` below
+  1,000 lines; every public path is unchanged.
+
+### Breaking: `ModelId`, `Model` and `ThinkingType` gain a variant
+
+**Migration.** Exhaustive matches over `ModelId` or `Model` add a
+`Sonnet5_5` arm, and over `ThinkingType` a `BetweenTools` arm.
+
+  `anthropic` is now 0.16.0.
+
 ## 0.15.0
 
 - With thinking off, `Request::new` refuses every effort-only message whose

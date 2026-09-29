@@ -6,13 +6,14 @@
 //! and the compiler refuses the request the API would have refused.
 //!
 //! The differences are not cosmetic. Thinking is always on for Opus 5.5,
-//! Fable 5.1, and Fable 5 and has no off state; Opus 5.5 and Fable 5.1 also
-//! refuse forced tool choice. On Opus 4.8, "off" is an *omitted* `thinking` field; on Opus 5 and
-//! Sonnet 5 an omitted field means thinking stays *on*, so off must be stated
-//! explicitly. Opus 5's accepted effort range depends on whether thinking is on,
-//! so its effort lives inside [`Opus5Thinking`]. Mutually exclusive settings are
-//! sum types, never two optional fields a caller must keep in sync, as
-//! [`Sonnet4_6Sampling`] shows.
+//! Fable 5.1, and Fable 5 and has no off state; Opus 5.5, Sonnet 5.5 and
+//! Fable 5.1 refuse forced tool choice. On Opus 4.8, "off" is an *omitted*
+//! `thinking` field; on Opus 5 and Sonnet 5 an omitted field means thinking stays
+//! *on*, so off must be stated, and Sonnet 5.5 states it as `between_tools`.
+//! Where the accepted effort range depends on whether thinking is on, effort
+//! lives inside the thinking state, as in [`Opus5Thinking`]. Mutually exclusive
+//! settings are sum types, never two optional fields a caller must keep in sync,
+//! as in [`Sonnet4_6Sampling`].
 //!
 //! Alongside the parameters, [`ModelId`] carries the documented per-model
 //! constants: context window, maximum output, cacheable-prefix minimum,
@@ -92,7 +93,9 @@ pub enum ModelId {
     Opus5,
     /// `claude-opus-4-8`, the prior Opus tier.
     Opus4_8,
-    /// `claude-sonnet-5`, the current Sonnet tier.
+    /// `claude-sonnet-5-5`, the current Sonnet tier.
+    Sonnet5_5,
+    /// `claude-sonnet-5`, the prior Sonnet tier.
     Sonnet5,
     /// `claude-sonnet-4-6`, the prior Sonnet tier.
     Sonnet4_6,
@@ -216,6 +219,7 @@ impl ModelId {
             ModelId::Opus5_5 => "claude-opus-5-5",
             ModelId::Opus5 => "claude-opus-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
+            ModelId::Sonnet5_5 => "claude-sonnet-5-5",
             ModelId::Sonnet5 => "claude-sonnet-5",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
             ModelId::Haiku4_5 => "claude-haiku-4-5",
@@ -233,6 +237,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 512,
             ModelId::Opus5_5 | ModelId::Opus5 => 512,
             ModelId::Opus4_8 => 1_024,
+            ModelId::Sonnet5_5 => 512,
             ModelId::Sonnet5 => 1_024,
             ModelId::Sonnet4_6 => 1_024,
             ModelId::Haiku4_5 => 4_096,
@@ -245,7 +250,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 1_000_000,
             ModelId::Opus5_5 | ModelId::Opus5 => 1_000_000,
             ModelId::Opus4_8 => 1_000_000,
-            ModelId::Sonnet5 => 1_000_000,
+            ModelId::Sonnet5_5 | ModelId::Sonnet5 => 1_000_000,
             ModelId::Sonnet4_6 => 1_000_000,
             ModelId::Haiku4_5 => 200_000,
         }
@@ -255,7 +260,7 @@ impl ModelId {
     ///
     /// A closed list, not a tier rule: the feature is documented as available on
     /// Fable 5.1, Fable 5, Mythos 5.1, Mythos 5, Opus 5.5, Opus 5, Opus 4.8,
-    /// and *not* on Sonnet 5, where the documentation says to use the top-level
+    /// Sonnet 5.5, and *not* on Sonnet 5, where the documentation says to use the top-level
     /// `system` field instead. Every model the list omits is therefore `false`
     /// here, so adding a model states its answer rather than inheriting a guess.
     ///
@@ -270,26 +275,32 @@ impl ModelId {
     /// for why that is a runtime refusal rather than a type error.
     pub fn accepts_mid_conversation_system_message(self) -> bool {
         match self {
-            ModelId::Fable5_1 | ModelId::Fable5 | ModelId::Opus5_5 | ModelId::Opus5 | ModelId::Opus4_8 => true,
+            ModelId::Fable5_1
+            | ModelId::Fable5
+            | ModelId::Opus5_5
+            | ModelId::Opus5
+            | ModelId::Opus4_8
+            | ModelId::Sonnet5_5 => true,
             ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
         }
     }
 
     /// Whether this model accepts an effort-only system message.
     ///
-    /// The beta is a closed model list: Fable 5.1, Mythos 5.1, Opus 5.5, and
-    /// Opus 5. Mythos is not modeled by this crate.
+    /// The beta is a closed model list: Fable 5.1, Mythos 5.1, Opus 5.5, Opus 5,
+    /// and Sonnet 5.5. Mythos is not modeled by this crate.
     pub fn accepts_per_message_effort(self) -> bool {
-        matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Opus5)
+        matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Opus5 | ModelId::Sonnet5_5)
     }
 
     /// Whether this model accepts `tool_choice` values that force a call.
     ///
-    /// Opus 5.5 and Fable 5.1 reject both `any` and a named `tool`: always-on
-    /// thinking must be allowed to run before the model chooses a call. Every
-    /// other model carried here accepts the full tool-choice vocabulary.
+    /// Opus 5.5, Sonnet 5.5 and Fable 5.1 reject both `any` and a named
+    /// `tool`, answering `tool_choice: type "tool" and "any" are not supported
+    /// for this model`. Every other model carried here accepts the full
+    /// tool-choice vocabulary.
     pub fn accepts_forced_tool_choice(self) -> bool {
-        !matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5)
+        !matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Sonnet5_5)
     }
 
     /// Maximum output tokens in a single synchronous Messages API response.
@@ -301,7 +312,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 128_000,
             ModelId::Opus5_5 | ModelId::Opus5 => 128_000,
             ModelId::Opus4_8 => 128_000,
-            ModelId::Sonnet5 => 128_000,
+            ModelId::Sonnet5_5 | ModelId::Sonnet5 => 128_000,
             ModelId::Sonnet4_6 => 128_000,
             ModelId::Haiku4_5 => 64_000,
         }
@@ -316,6 +327,7 @@ impl ModelId {
             ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
+            ModelId::Sonnet5_5 => (2026, Month::June),
             ModelId::Sonnet5 => (2026, Month::January),
             ModelId::Sonnet4_6 => (2025, Month::August),
             ModelId::Haiku4_5 => (2025, Month::February),
@@ -331,6 +343,7 @@ impl ModelId {
             ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
+            ModelId::Sonnet5_5 => (2026, Month::June),
             ModelId::Sonnet5 => (2026, Month::January),
             ModelId::Sonnet4_6 => (2026, Month::January),
             ModelId::Haiku4_5 => (2025, Month::July),
@@ -345,7 +358,7 @@ impl ModelId {
             ModelId::Fable5 => (1_000, 100, 5_000),
             ModelId::Opus5_5 => (400, 20, 2_000),
             ModelId::Opus5 | ModelId::Opus4_8 => (500, 50, 2_500),
-            ModelId::Sonnet5 => (200, 20, 1_000),
+            ModelId::Sonnet5_5 | ModelId::Sonnet5 => (200, 20, 1_000),
             ModelId::Sonnet4_6 => (300, 30, 1_500),
             ModelId::Haiku4_5 => (100, 10, 500),
         };
@@ -369,6 +382,8 @@ pub enum Model {
     Opus5(Opus5),
     /// Opus 4.8 and its parameters.
     Opus4_8(Opus4_8),
+    /// Sonnet 5.5 and its parameters.
+    Sonnet5_5(Sonnet5_5),
     /// Sonnet 5 and its parameters.
     Sonnet5(Sonnet5),
     /// Sonnet 4.6 and its parameters.
@@ -386,6 +401,7 @@ impl Model {
             Model::Fable5(_) => ModelId::Fable5,
             Model::Opus5(_) => ModelId::Opus5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
+            Model::Sonnet5_5(_) => ModelId::Sonnet5_5,
             Model::Sonnet5(_) => ModelId::Sonnet5,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
             Model::Haiku4_5(_) => ModelId::Haiku4_5,
@@ -425,6 +441,10 @@ impl Model {
     pub fn opus_4_8() -> Opus4_8 {
         Opus4_8::default()
     }
+    /// Sonnet 5.5 with its default parameters.
+    pub fn sonnet_5_5() -> Sonnet5_5 {
+        Sonnet5_5::default()
+    }
     /// Sonnet 5 with its default parameters.
     pub fn sonnet_5() -> Sonnet5 {
         Sonnet5::default()
@@ -462,6 +482,11 @@ impl From<Opus5> for Model {
 impl From<Opus4_8> for Model {
     fn from(p: Opus4_8) -> Self {
         Model::Opus4_8(p)
+    }
+}
+impl From<Sonnet5_5> for Model {
+    fn from(p: Sonnet5_5) -> Self {
+        Model::Sonnet5_5(p)
     }
 }
 impl From<Sonnet5> for Model {
@@ -555,135 +580,9 @@ api_enum! {
 }
 
 // ── Opus 5 ───────────────────────────────────────────────────────────────────
-// Current Opus tier. No sampling: `temperature` is rejected outright as
-// deprecated for this model, so — unlike Sonnet 4.6, where temperature and
-// adaptive thinking are alternatives — there is no sampling knob to model at
-// all. Adaptive thinking is *on by default*: omitting `thinking` leaves it on,
-// so "off" must be stated as `{type: "disabled"}`, exactly as on Sonnet 5 and
-// unlike Opus 4.8, whose off state is the omitted field.
-//
-// Effort belongs to the thinking state rather than beside it, because the two
-// are not independent: with thinking on the full Opus-tier range applies,
-// `xhigh` and `max` included; with it off the API accepts only `high` and
-// below. Carrying effort on each variant makes the refused pair unwritable.
 
-/// Opus 5's per-call parameters.
-///
-/// No sampling knob at all: `temperature` is refused as deprecated on this model.
-/// Effort lives inside [`Opus5Thinking`] rather than beside it, because the two
-/// are not independent — the accepted effort range narrows once thinking is off,
-/// and carrying effort per variant makes the refused pair unwritable.
-pub struct Opus5 {
-    /// Whether the model thinks, and how much.
-    pub thinking: Opus5Thinking,
-}
-
-impl Default for Opus5 {
-    /// Adaptive thinking on with `Omitted` display and the documented default
-    /// effort, `high` — the runtime default the API applies when `thinking` is
-    /// absent, emitted explicitly.
-    fn default() -> Self {
-        Self { thinking: Opus5Thinking::Adaptive { display: ThinkingDisplay::Omitted, effort: Opus5Effort::High } }
-    }
-}
-
-impl Opus5 {
-    /// The default parameters.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the effort thinking is spent at. Only meaningful with thinking on;
-    /// with it off, effort is chosen through [`Opus5::with_thinking_off`],
-    /// whose narrower range is the one the API accepts in that state.
-    pub fn with_effort(mut self, effort: Opus5Effort) -> Self {
-        let display = match self.thinking {
-            Opus5Thinking::Adaptive { display, .. } => display,
-            Opus5Thinking::Disabled { .. } => ThinkingDisplay::Omitted,
-        };
-        self.thinking = Opus5Thinking::Adaptive { display, effort };
-        self
-    }
-
-    /// Set adaptive thinking's summary visibility, turning thinking on where it
-    /// was off. `display` defaults to `Omitted` (blocks stream but text is
-    /// empty); pass `Summarized` for visible text.
-    pub fn with_adaptive_thinking(mut self, display: ThinkingDisplay) -> Self {
-        let effort = match self.thinking {
-            Opus5Thinking::Adaptive { effort, .. } => effort,
-            Opus5Thinking::Disabled { .. } => Opus5Effort::High,
-        };
-        self.thinking = Opus5Thinking::Adaptive { display, effort };
-        self
-    }
-
-    /// Turn thinking off at `effort`. Emits `{type: "disabled"}` explicitly: on
-    /// Opus 5 an omitted `thinking` field leaves adaptive thinking on, so off
-    /// must be stated. The effort range narrows to `high` and below, which is
-    /// what [`Opus5ThinkingOffEffort`] carries.
-    pub fn with_thinking_off(mut self, effort: Opus5ThinkingOffEffort) -> Self {
-        self.thinking = Opus5Thinking::Disabled { effort };
-        self
-    }
-}
-
-/// Whether Opus 5 thinks, and at what effort.
-///
-/// The effort lives inside the thinking state rather than beside it, because the
-/// accepted range depends on whether thinking is on: the refused combination is
-/// unwritable rather than rejected at runtime.
-pub enum Opus5Thinking {
-    /// Adaptive thinking on. The state an omitted `thinking` field would also
-    /// produce, emitted explicitly.
-    Adaptive {
-        /// Whether reasoning text is sent back.
-        display: ThinkingDisplay,
-        /// How much thinking to spend, over the full range.
-        effort: Opus5Effort,
-    },
-    /// Explicit `{type: "disabled"}` — distinct from an omitted field, which on
-    /// Opus 5 means adaptive thinking on. Carries its own effort, because the
-    /// API accepts a narrower range with thinking off (`high` and below) than
-    /// with it on: `xhigh` and `max` are refused as
-    /// "not supported when thinking is disabled on this model".
-    Disabled {
-        /// How much effort to spend, over the narrower range this state accepts.
-        effort: Opus5ThinkingOffEffort,
-    },
-}
-
-api_enum! {
-    /// How much thinking Opus 5 spends with thinking *on*. Reachable only in that
-    /// state; see [`Opus5ThinkingOffEffort`] for the other.
-    Opus5Effort {
-        /// The least thinking.
-        Low => "low",
-        /// Between `low` and `high`.
-        Medium => "medium",
-        /// The documented default.
-        High => "high",
-        /// Above `high`. Opus-tier and Fable only; Sonnet 4.6 rejects it.
-        Xhigh => "xhigh",
-        /// The most thinking.
-        Max => "max",
-    }
-}
-
-api_enum! {
-    /// How much effort Opus 5 spends with thinking *off*.
-    ///
-    /// `xhigh` and `max` exist on this model but not in this state — the API
-    /// refuses them as unsupported with thinking disabled — so they are absent
-    /// from the type rather than rejected at runtime.
-    Opus5ThinkingOffEffort {
-        /// The least thinking.
-        Low => "low",
-        /// Between `low` and `high`.
-        Medium => "medium",
-        /// The documented default.
-        High => "high",
-    }
-}
+mod opus_5;
+pub use opus_5::{Opus5, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort};
 
 // ── Opus 4.8 ─────────────────────────────────────────────────────────────────
 // No sampling (temperature/top_p/top_k rejected). Adaptive thinking only;
@@ -761,8 +660,15 @@ api_enum! {
     }
 }
 
+// ── Sonnet 5.5 ───────────────────────────────────────────────────────────────
+
+mod sonnet_5_5;
+pub use sonnet_5_5::{
+    Sonnet5_5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5_5ThinkingDisplay,
+};
+
 // ── Sonnet 5 ─────────────────────────────────────────────────────────────────
-// Current Sonnet tier. No sampling (temperature/top_p/top_k non-default rejected,
+// Prior Sonnet tier. No sampling (temperature/top_p/top_k non-default rejected,
 // like Opus 4.8). Adaptive thinking is *on by default*: omitting `thinking` leaves
 // it on, so "off" has to be sent explicitly as `{type: "disabled"}` — unlike Opus
 // 4.8, whose off state is simply the omitted field. Legacy `{type: "enabled",

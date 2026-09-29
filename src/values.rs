@@ -168,11 +168,15 @@ api_enum! {
         /// on Sonnet 4.6.
         Enabled => "enabled",
         /// The adaptive form, where the model chooses how much to think.
-        /// Emitted for Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8, and Sonnet 5.
+        /// Emitted for Fable 5.1, Fable 5, Opus 5.5, Opus 5, Opus 4.8, Sonnet 5.5,
+        /// and Sonnet 5.
         Adaptive => "adaptive",
         /// The explicit off form. Needed where an omitted `thinking` field would
         /// instead leave adaptive thinking on, as on Opus 5 and Sonnet 5.
         Disabled => "disabled",
+        /// No thinking before responding, only progress updates between tool
+        /// calls. Sonnet 5.5's off form, where `disabled` is refused.
+        BetweenTools => "between_tools",
     }
 }
 

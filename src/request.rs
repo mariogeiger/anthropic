@@ -31,8 +31,9 @@ use serde::Serialize;
 pub use crate::model::{
     Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, FableThinkingDisplay, Haiku4_5, Haiku4_5Thinking, Model, ModelId,
     Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5_5, Opus5_5Effort, Opus5_5ThinkingDisplay, Opus5Effort,
-    Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5,
-    Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
+    Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5_5,
+    Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5_5ThinkingDisplay, Sonnet5Effort,
+    Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -438,8 +439,9 @@ impl<'a> Request<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`RequestError::ForcedToolChoiceUnsupported`] when Fable 5.1 is
-    /// asked for `any` or one named tool. It supports only `auto` and `none`.
+    /// Returns [`RequestError::ForcedToolChoiceUnsupported`] when a model that
+    /// supports only `auto` and `none` is asked for `any` or one named tool; see
+    /// [`ModelId::accepts_forced_tool_choice`].
     pub fn with_tool_choice(mut self, choice: ToolChoice) -> Result<Self, RequestError> {
         if !self.model.id().accepts_forced_tool_choice()
             && matches!(choice, ToolChoice::Any { .. } | ToolChoice::Tool { .. })
@@ -541,6 +543,7 @@ impl<'a> Request<'a> {
             Model::Opus5_5(_) | Model::Fable5_1(_) | Model::Fable5(_) => true,
             Model::Opus5(model) => matches!(model.thinking, Opus5Thinking::Adaptive { .. }),
             Model::Opus4_8(model) => matches!(model.thinking, Opus4_8Thinking::Adaptive { .. }),
+            Model::Sonnet5_5(model) => matches!(model.thinking, Sonnet5_5Thinking::Adaptive { .. }),
             Model::Sonnet5(model) => matches!(model.thinking, Sonnet5Thinking::Adaptive { .. }),
             Model::Sonnet4_6(model) => matches!(model.sampling, Sonnet4_6Sampling::Adaptive { .. }),
             Model::Haiku4_5(model) => matches!(model.thinking, Haiku4_5Thinking::Enabled { .. }),
@@ -554,6 +557,9 @@ impl<'a> Request<'a> {
         match (&self.model, feature) {
             (Model::Opus5_5(model), BetaFeature::ThinkingDisplayUpdates) => {
                 model.display == Opus5_5ThinkingDisplay::Updates
+            }
+            (Model::Sonnet5_5(model), BetaFeature::ThinkingDisplayUpdates) => {
+                matches!(model.thinking, Sonnet5_5Thinking::Adaptive { display: Sonnet5_5ThinkingDisplay::Updates, .. })
             }
             (Model::Fable5_1(model), BetaFeature::ThinkingDisplayUpdates) => {
                 model.display == FableThinkingDisplay::Updates
@@ -578,6 +584,11 @@ fn thinking_off_effort(model: &Model) -> Option<PerMessageEffort> {
             Opus5ThinkingOffEffort::Low => PerMessageEffort::Low,
             Opus5ThinkingOffEffort::Medium => PerMessageEffort::Medium,
             Opus5ThinkingOffEffort::High => PerMessageEffort::High,
+        }),
+        Model::Sonnet5_5(Sonnet5_5 { thinking: Sonnet5_5Thinking::BetweenTools { effort } }) => Some(match effort {
+            Sonnet5_5BetweenToolsEffort::Low => PerMessageEffort::Low,
+            Sonnet5_5BetweenToolsEffort::Medium => PerMessageEffort::Medium,
+            Sonnet5_5BetweenToolsEffort::High => PerMessageEffort::High,
         }),
         _ => None,
     }
@@ -653,8 +664,10 @@ struct EnabledThinking {
     block_binding: Option<BlockBinding>,
 }
 
+// The off forms, `disabled` and `between_tools`, are a type tag and nothing else:
+// `between_tools` answers any other field with `Extra inputs are not permitted`.
 #[derive(Serialize)]
-struct DisabledThinking {
+struct TagOnlyThinking {
     #[serde(rename = "type")]
     kind: ThinkingType,
 }
@@ -664,7 +677,7 @@ struct DisabledThinking {
 enum ThinkingWire {
     Adaptive(AdaptiveThinking),
     Enabled(EnabledThinking),
-    Disabled(DisabledThinking),
+    TagOnly(TagOnlyThinking),
 }
 
 #[derive(Serialize)]
@@ -738,6 +751,7 @@ impl Serialize for Request<'_> {
                 block_binding: block_binding(),
             })
         };
+        let tag_only = |kind| ThinkingWire::TagOnly(TagOnlyThinking { kind });
         let effort = |e: &'static str| Some(e);
         let (temperature, thinking, output_config) = match &self.model {
             // Thinking is always on — always emit the adaptive block (the
@@ -752,11 +766,19 @@ impl Serialize for Request<'_> {
                 Opus5Thinking::Adaptive { display, effort: e } => {
                     (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
                 }
-                Opus5Thinking::Disabled { effort: e } => (
-                    None,
-                    Some(ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled })),
-                    effort(e.as_str()),
-                ),
+                Opus5Thinking::Disabled { effort: e } => {
+                    (None, Some(tag_only(ThinkingType::Disabled)), effort(e.as_str()))
+                }
+            },
+            // Thinking off is `between_tools`, which this model takes in place of
+            // `disabled`. No sampling: `temperature` is refused as deprecated.
+            Model::Sonnet5_5(p) => match &p.thinking {
+                Sonnet5_5Thinking::Adaptive { display, effort: e } => {
+                    (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
+                }
+                Sonnet5_5Thinking::BetweenTools { effort: e } => {
+                    (None, Some(tag_only(ThinkingType::BetweenTools)), effort(e.as_str()))
+                }
             },
             Model::Opus4_8(p) => (
                 None,
@@ -772,9 +794,7 @@ impl Serialize for Request<'_> {
                 None,
                 Some(match &p.thinking {
                     Sonnet5Thinking::Adaptive { display } => adaptive(Some(display.as_str())),
-                    Sonnet5Thinking::Disabled => {
-                        ThinkingWire::Disabled(DisabledThinking { kind: ThinkingType::Disabled })
-                    }
+                    Sonnet5Thinking::Disabled => tag_only(ThinkingType::Disabled),
                 }),
                 effort(p.effort.as_str()),
             ),
