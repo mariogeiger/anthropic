@@ -14,40 +14,44 @@
 //!     400 at the API, documenting why the type system forbids it
 //!     (one type per model). These post raw JSON the crate can't emit.
 //!
-//! Every result below was observed live on 2026-05-29, except the Fable 5 cases
-//! (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
-//! on the test org, so those tests skipped rather than exercising 200/400. They
-//! assert the documented behavior for orgs that do have access. The Sonnet 5 cases
-//! (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
-//! customers, so they exercise 200/400 on any org with a `.key`.
-//!
-//! The Fable 5.1 cases (added 2026-09-02) encode its published GA behavior.
-//! Stable controls and all five beta headers were exercised first-party on
-//! 2026-09-03. A separate bounded probe against the configured inference
-//! gateway found that its model catalog does not yet list Fable 5.1 and its
-//! credential rejects the model with `key_model_access_denied`; this deployment
-//! gap remains recorded rather than being mistaken for the first-party grammar.
-//!
-//! The API-coverage cases (added 2026-08-30) were exercised against the same
-//! translating gateway: a mid-conversation system message after a user turn,
-//! *two* of them in a row, cited documents and cited search results both
-//! answering with a `char_location` citation, `service_tier` +
-//! `metadata.user_id` + `output_config.format` together, and a deferred tool
-//! beside an eager one. The adjacency case corrected a real error: the crate had
-//! refused two system messages in a row, which the API accepts.
-//!
-//! The Opus 5 cases (added 2026-08-28) were exercised against a translating
-//! gateway rather than the first-party API: adaptive thinking on by default,
-//! `{type:"disabled"}` accepted as the off state, `output_config.effort` graded
-//! from `low` to `max`, `display: "summarized"` yielding readable thinking text
-//! where `omitted` yields an empty block, `max_tokens` capped at exactly
-//! 128,000, the 1M context window refused above it by token count,
-//! `temperature` refused as deprecated, a 512-token cacheable prefix minimum,
-//! and `xhigh`/`max` refused while thinking is disabled. The per-model
-//! constants (pricing, cutoffs) are documented values, not wire-observable
-//! ones, and come from the model page. A gateway can differ from the
-//! first-party API in both directions, so these remain to be confirmed on an
-//! org with a `.key`.
+//! When and where each group was observed is recorded below the header.
+
+// Provenance.
+//
+// Every result below was observed live on 2026-05-29, except the Fable 5 cases
+// (added 2026-06-18): Fable 5 is access-gated and returned 404 "not available"
+// on the test org, so those tests skipped rather than exercising 200/400. They
+// assert the documented behavior for orgs that do have access. The Sonnet 5 cases
+// (added 2026-07-01) encode the published GA behavior; Sonnet 5 is GA to all
+// customers, so they exercise 200/400 on any org with a `.key`.
+//
+// The Fable 5.1 cases (added 2026-09-02) encode its published GA behavior.
+// Stable controls and all five beta headers were exercised first-party on
+// 2026-09-03. A separate bounded probe against the configured inference
+// gateway found that its model catalog does not yet list Fable 5.1 and its
+// credential rejects the model with `key_model_access_denied`; this deployment
+// gap remains recorded rather than being mistaken for the first-party grammar.
+//
+// The API-coverage cases (added 2026-08-30) were exercised against the same
+// translating gateway: a mid-conversation system message after a user turn,
+// *two* of them in a row, cited documents and cited search results both
+// answering with a `char_location` citation, `service_tier` +
+// `metadata.user_id` + `output_config.format` together, and a deferred tool
+// beside an eager one. The adjacency case corrected a real error: the crate had
+// refused two system messages in a row, which the API accepts.
+//
+// The Opus 5 cases (added 2026-08-28) were exercised against a translating
+// gateway rather than the first-party API: adaptive thinking on by default,
+// `{type:"disabled"}` accepted as the off state, `output_config.effort` graded
+// from `low` to `max`, `display: "summarized"` yielding readable thinking text
+// where `omitted` yields an empty block, `max_tokens` capped at exactly
+// 128,000, the 1M context window refused above it by token count,
+// `temperature` refused as deprecated, a 512-token cacheable prefix minimum,
+// and `xhigh`/`max` refused while thinking is disabled. The per-model
+// constants (pricing, cutoffs) are documented values, not wire-observable
+// ones, and come from the model page. A gateway can differ from the
+// first-party API in both directions, so these remain to be confirmed on an
+// org with a `.key`.
 
 use anthropic::block::{ContentBlock, TextBlock};
 use anthropic::context::{CacheSlot, Context, Opening, Tool};

@@ -8,23 +8,10 @@
 //!
 //! This module holds the block and delta types and the fold that joins them.
 //! [`crate::stream`] wraps them in events; [`crate::settle`] keeps them in an
-//! index-ordered map.
-//!
-//! # Every delta appends
-//!
-//! No delta replaces anything. That is why accumulation is a fold — the same
-//! frame applied twice is visible as doubled text, so [`crate::settle`] never
-//! applies one twice, and why a block is complete exactly when its
-//! `content_block_stop` has arrived.
-//!
-//! # Unrecognized kinds are not failures
-//!
-//! Server tools introduce block kinds that a caller using only its own tools
-//! never sees, and Anthropic adds more over time. Web search's two are modeled
-//! ([`StreamedBlock::ServerToolUse`], [`StreamedBlock::WebSearchToolResult`]);
-//! the rest are not yet. So both blocks and deltas have an `Unmodeled` variant, for the same reason
-//! [`crate::stream::StreamEvent::Unmodeled`] exists: a well-formed thing this
-//! crate does not know is not a broken frame.
+//! index-ordered map. Every delta appends, so a block is complete exactly when
+//! its `content_block_stop` has arrived; see [`BlockDelta`]. A block or delta kind
+//! this crate does not know is `Unmodeled`, never an error; see
+//! [`StreamedBlock::Unmodeled`].
 
 use serde_json::Value;
 
@@ -210,8 +197,14 @@ pub enum StreamedBlock {
     /// A block kind this crate does not model — another server tool's call or
     /// result, or anything Anthropic adds later.
     ///
-    /// Never an error, for the reason given in the module documentation. Its
-    /// `kind` is worth logging once.
+    /// Never an error. Server tools introduce block kinds that a caller using
+    /// only its own tools never sees, and Anthropic adds more over time. Web
+    /// search's two are modeled ([`Self::ServerToolUse`],
+    /// [`Self::WebSearchToolResult`]); the rest are not yet. Both blocks and
+    /// deltas have an `Unmodeled` variant for the same reason
+    /// [`crate::stream::StreamEvent::Unmodeled`] exists: a well-formed thing this
+    /// crate does not know is not a broken frame. Its `kind` is worth logging
+    /// once.
     Unmodeled {
         /// The block's `type`.
         kind: String,
@@ -313,7 +306,9 @@ impl StreamedBlock {
 
 /// One `content_block_delta` payload.
 ///
-/// Every variant appends; none replaces.
+/// Every variant appends; none replaces. That is why accumulation is a fold — the
+/// same frame applied twice is visible as doubled text, so [`crate::settle`] never
+/// applies one twice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockDelta {
     /// `text_delta`: more answer text.

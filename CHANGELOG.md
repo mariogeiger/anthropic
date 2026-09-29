@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.1
+
+- Every file's header now fits in 20 lines. The explanation a header used to
+  carry now sits on the item it explains: the prompt-cache rules on
+  `PromptCache`, the `tool_choice` cache table on `ToolChoice`, the merge
+  argument on `Usage::merge_cumulative`, the stream example and the
+  `stop_reason` trap on `Settling`, why the two system positions are disjoint
+  on `SystemMessage`, and each `compile_fail` proof on `Message`, `Opening`,
+  and `Context`. Documentation only; no type or behavior changed.
+
+  `anthropic` is now 0.14.1.
+
 ## 0.14.0
 
 - The web search server tool is declarable: `web_search::WebSearchTool`

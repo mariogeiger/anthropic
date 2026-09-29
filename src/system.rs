@@ -1,67 +1,19 @@
 //! System content: the top-level prompt, and an instruction added mid-conversation.
 //!
-//! # Why a mid-conversation system message exists
-//!
 //! An instruction that arrives partway through a conversation has nowhere good to
 //! go. Rewriting the top-level system prompt changes the first bytes of the
-//! request, which invalidates the prompt cache for the whole conversation.
-//! Wrapping the instruction in a user turn works, but the model reads it as
-//! something the user said rather than as a directive.
+//! request and invalidates the prompt cache for the whole conversation; wrapping
+//! it in a user turn makes the model read it as something the user said. A
+//! `{"role": "system"}` entry inside `messages` solves both: it sits after the
+//! cached prefix, and the model reads it as a directive.
 //!
-//! A `{"role": "system"}` entry inside `messages` solves both: it sits after the
-//! cached prefix, so nothing before it changes, and the model reads it as an
-//! instruction. That is why [`SystemBlock`] exists as its own block set rather
-//! than reusing [`crate::block::ContentBlock`] — the two positions admit
-//! different content, and a type that admitted the union would let the API's
-//! refusal be written.
-//!
-//! # Why both positions exist
-//!
-//! The two look interchangeable and are not. Sending the same text in the
-//! top-level `system` field and as a leading `{"role": "system"}` message
-//! produces identical behaviour and identical `input_token` counts, which is what
-//! makes the question reasonable. They are nonetheless **disjoint by position**,
-//! and the documented rules say so twice.
-//!
-//! *By placement.* "A system message cannot be the first entry in `messages`. Use
-//! the top-level `system` field for instructions that apply from the very start."
-//! So the top-level field is the *only* legal home for an instruction that holds
-//! from the beginning, and a system message is the only home for one that begins
-//! partway through. Neither position can be spelled the other way, and the reason
-//! is the prompt cache: the top-level field sits near the start of the hashed
-//! prefix, so editing it re-processes the whole conversation, while a system
-//! message appends after the prefix and costs nothing. Measured over a
-//! 12,600-token cached prefix: editing a *trailing* system message still read the
-//! whole prefix from cache, while editing the top-level `system` field read 0 and
-//! rewrote all of it.
-//!
-//! *By model.* Mid-conversation system messages are documented as available on
-//! Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude Sonnet 5;
-//! use the top-level `system` field instead". The top-level field works on every
-//! model, so it is also the only *portable* position. See
-//! [`crate::model::ModelId::accepts_mid_conversation_system_message`] and
-//! [`crate::request::RequestError::MidConversationSystemMessageUnsupported`].
-//!
-//! Both rules are stated in
-//! <https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages>,
-//! and the documentation is the authority: a gateway may accept a shape the API
-//! forbids, so a 200 does not make it legal.
-//!
-//! # What each position admits
-//!
-//! The top-level `system` field takes text and nothing else. A persistent system
-//! *message* takes text, [`SystemBlock::ToolAddition`], and
-//! [`SystemBlock::ToolRemoval`]. Two beta message shapes remain disjoint from it:
-//! [`SystemMessage::Effort`] carries empty content and one effort change, while
-//! [`SystemMessage::TurnScoped`] carries text only and cannot carry a cache
-//! breakpoint. The shared text representation is [`crate::block::TextBlock`].
-//!
-//! # Placement
-//!
-//! [`crate::context::Context::push_system`] and [`crate::request::Request::new`]
-//! enforce the placement rules between them; see
-//! [`crate::context::SystemMessageError`] for what they are and why the check is
-//! split across the two.
+//! The two positions are disjoint. The top-level field is the only home for an
+//! instruction that holds from the start, a system message the only home for one
+//! that begins partway through, and the top-level field is the only one every
+//! model accepts. They admit different content too, which is why [`SystemBlock`]
+//! and [`SystemMessage`] are their own types rather than reusing
+//! [`crate::block::ContentBlock`]. See [`SystemMessage`] for the rules and
+//! measurements, and [`crate::context::SystemMessageError`] for placement.
 
 use serde::Serialize;
 
@@ -106,7 +58,41 @@ api_enum! {
 /// The split makes the beta exclusions structural. A turn-scoped message holds
 /// text only, so it has nowhere to put a tool change, cache breakpoint, or
 /// `output_config`. An effort change carries empty content by construction and
-/// no `clear_at`. A persistent message is the stable text/tool-change form.
+/// no `clear_at`. A persistent message is the stable text/tool-change form. The
+/// top-level `system` field, by contrast, takes text and nothing else; the text
+/// representation both share is [`TextBlock`].
+///
+/// # Why a system message is not a second top-level prompt
+///
+/// Sending the same text in the top-level `system` field and as a leading system
+/// message produces identical behaviour and identical `input_token` counts, which
+/// makes them look interchangeable. They are disjoint by position, and the
+/// documented rules say so twice.
+///
+/// *By placement.* "A system message cannot be the first entry in `messages`. Use
+/// the top-level `system` field for instructions that apply from the very start."
+/// Neither position can be spelled the other way, and the reason is the prompt
+/// cache: the top-level field sits near the start of the hashed prefix, so editing
+/// it re-processes the whole conversation, while a system message appends after
+/// the prefix and costs nothing. Measured over a 12,600-token cached prefix:
+/// editing a *trailing* system message still read the whole prefix from cache,
+/// while editing the top-level `system` field read 0 and rewrote all of it.
+///
+/// *By model.* Mid-conversation system messages are documented as available on
+/// Fable 5, Mythos 5, Opus 4.8 and Opus 5, and "not available on Claude Sonnet 5;
+/// use the top-level `system` field instead". See
+/// [`crate::model::ModelId::accepts_mid_conversation_system_message`] and
+/// [`crate::request::RequestError::MidConversationSystemMessageUnsupported`].
+///
+/// Both rules are stated in
+/// <https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages>,
+/// and the documentation is the authority: a gateway may accept a shape the API
+/// forbids, so a 200 does not make it legal.
+///
+/// [`crate::context::Context::push_system`] and [`crate::request::Request::new`]
+/// enforce the placement rules between them; see
+/// [`crate::context::SystemMessageError`] for what they are and why the check is
+/// split across the two.
 #[derive(Debug, Clone)]
 pub enum SystemMessage {
     /// Text or tool changes that remain in force.

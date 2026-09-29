@@ -8,79 +8,12 @@
 //! the API limit; `roll_cache` only moves slot metadata, never rewrites content;
 //! TTL ordering (1h before 5m) validated before every commit.
 //!
-//! Types model what the model *sees*, not wire-format field presence: every
-//! `Option` represents a real runtime distinction. `SystemPrompt` is one struct
-//! with two wire shapes (bare string vs one-element array); the serializer picks.
-//!
-//! `cache_control` is not reachable from outside the crate: `CacheControl` has
-//! no public constructor and no public fields, and the `cache_control` slot on
-//! every content block and `Tool` is crate-private. The only way to attach a
-//! breakpoint is through `CacheSlot` via `Opening::CachedInstruction`,
-//! `with_tools_cached`, or `roll_cache`, which keeps slot bookkeeping
-//! consistent with content.
-//!
-//! Every wire value drawn from a closed API vocabulary is the matching enum from
-//! [`crate::values`], never the string it serializes to. A `&'static str` field is
-//! writable with any string; an enum field is writable only with a value the API
-//! accepts.
-//!
-//! [`Message`] goes one step further: the role is not a field at all. The three
-//! roles do not admit the same content — a system message is one of the three
-//! exact shapes in [`SystemMessage`] — so the role is the *variant*, and
-//! [`Message::role`] derives the wire value from it. A role beside a free content
-//! list cannot be written:
-//!
-//! ```compile_fail
-//! use anthropic::context::{ContentBlock, Message};
-//!
-//! // There is no `role` field to set, so this does not compile.
-//! let _ = Message { role: anthropic::Role::System, content: Vec::<ContentBlock>::new() };
-//! ```
-//!
-//! ```compile_fail
-//! use anthropic::context::{ContentBlock, Message};
-//! use anthropic::system::SystemMessage;
-//!
-//! // Nor can persistent system content hold an ordinary content block.
-//! let _ = Message::System(SystemMessage::Persistent(vec![ContentBlock::text("no")]));
-//! ```
-//!
-//! The placement rules are therefore checked in one place each, and the check
-//! cannot be walked around: `messages` is private and there is no `&mut` path to
-//! it, so [`Context::push_system`] is the only way a system message enters a
-//! conversation and [`crate::request::Request::new`] the only way one leaves.
-//!
-//! ```compile_fail
-//! use anthropic::context::{Context, Opening};
-//! use anthropic::system::SystemMessage;
-//!
-//! // The field is private, so a leading system message cannot be installed
-//! // behind `push_system`'s back.
-//! let mut ctx = Context::new(Opening::None);
-//! ctx.messages.push(anthropic::context::Message::System(
-//!     SystemMessage::Persistent(Vec::new()),
-//! ));
-//! ```
-//!
-//! The opening is the same story one level up. It is an argument to
-//! [`Context::new`], not a field and not a builder step, so a conversation always
-//! has its opening decided before it can hold a message and no later call can
-//! replace it:
-//!
-//! ```compile_fail
-//! use anthropic::context::{Context, Opening};
-//!
-//! // There is no `with_system` to install an opening after the fact.
-//! let ctx = Context::new(Opening::None).with_system("too late");
-//! ```
-//!
-//! ```compile_fail
-//! use anthropic::context::{Context, Opening};
-//!
-//! // Nor is the opening an assignable field.
-//! let mut ctx = Context::new(Opening::None);
-//! ctx.system = Some(String::from("too late"));
-//! ```
+//! `cache_control` is not reachable from outside the crate, so a breakpoint is
+//! placed only through a [`CacheSlot`]; see [`CacheControl`]. A message's role is
+//! its [`Message`] variant, not a field beside free content, and
+//! [`Context::push_system`] is the only way a system message enters a
+//! conversation. Each impossibility is proven by a `compile_fail` example on the
+//! item it concerns: [`Message`], [`Context`], and [`Opening`].
 
 use crate::block::{ContentBlock, TextBlock, ToolResultContent};
 use crate::system::{PerMessageEffort, SystemBlock, SystemClearAt, SystemMessage};
@@ -95,7 +28,9 @@ pub use crate::tool::{Tool, ToolDefinition};
 ///
 /// Has no public constructor and no public fields, and every `cache_control` slot
 /// that holds one is crate-private. So the only way to place a breakpoint is
-/// through a [`CacheSlot`], which keeps slot bookkeeping consistent with content.
+/// through a [`CacheSlot`], which keeps slot bookkeeping consistent with content:
+/// [`Opening::CachedInstruction`], [`Context::with_tools_cached`], or
+/// [`Context::roll_cache`].
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct CacheControl {
     #[serde(rename = "type")]
@@ -163,6 +98,21 @@ struct SlotState {
 /// What is *not* public is `cache_control` on the blocks inside — that carries a
 /// cross-message invariant, so it stays crate-private and reachable only through a
 /// [`CacheSlot`].
+///
+/// ```compile_fail
+/// use anthropic::context::{ContentBlock, Message};
+///
+/// // There is no `role` field to set, so this does not compile.
+/// let _ = Message { role: anthropic::Role::System, content: Vec::<ContentBlock>::new() };
+/// ```
+///
+/// ```compile_fail
+/// use anthropic::context::{ContentBlock, Message};
+/// use anthropic::system::SystemMessage;
+///
+/// // Nor can persistent system content hold an ordinary content block.
+/// let _ = Message::System(SystemMessage::Persistent(vec![ContentBlock::text("no")]));
+/// ```
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The caller's turn. Tool results go here too.
@@ -338,6 +288,21 @@ impl Message {
 /// says "tools, then system, then messages". Taking it as an argument means the
 /// opening exists before the first message can, and cannot be replaced afterwards
 /// because no method takes `&mut` to it.
+///
+/// ```compile_fail
+/// use anthropic::context::{Context, Opening};
+///
+/// // There is no `with_system` to install an opening after the fact.
+/// let ctx = Context::new(Opening::None).with_system("too late");
+/// ```
+///
+/// ```compile_fail
+/// use anthropic::context::{Context, Opening};
+///
+/// // Nor is the opening an assignable field.
+/// let mut ctx = Context::new(Opening::None);
+/// ctx.system = Some(String::from("too late"));
+/// ```
 #[derive(Debug, Clone)]
 pub enum Opening {
     /// No system prompt. The conversation starts with its first message, and the
@@ -521,6 +486,24 @@ impl std::error::Error for SystemMessageError {}
 /// [`Opening`] is fixed at [`Context::new`] and tools at construction.
 /// Breakpoints live in four named [`CacheSlot`]s and are moved by metadata-only
 /// operations that validate TTL ordering *before* they commit.
+///
+/// The placement rules for system messages are checked in one place each, and
+/// the check cannot be walked around: `messages` is private and there is no
+/// `&mut` path to it, so [`Context::push_system`] is the only way a system message
+/// enters a conversation and [`crate::request::Request::new`] the only way one
+/// leaves.
+///
+/// ```compile_fail
+/// use anthropic::context::{Context, Opening};
+/// use anthropic::system::SystemMessage;
+///
+/// // The field is private, so a leading system message cannot be installed
+/// // behind `push_system`'s back.
+/// let mut ctx = Context::new(Opening::None);
+/// ctx.messages.push(anthropic::context::Message::System(
+///     SystemMessage::Persistent(Vec::new()),
+/// ));
+/// ```
 pub struct Context {
     pub(crate) tools: Vec<ToolDefinition>,
     pub(crate) system: Option<SystemPrompt>,

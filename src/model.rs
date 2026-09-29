@@ -9,14 +9,10 @@
 //! Fable 5.1, and Fable 5 and has no off state; Opus 5.5 and Fable 5.1 also
 //! refuse forced tool choice. On Opus 4.8, "off" is an *omitted* `thinking` field; on Opus 5 and
 //! Sonnet 5 an omitted field means thinking stays *on*, so off must be stated
-//! explicitly. Opus 5 goes further and makes the accepted effort range depend on
-//! whether thinking is on, which is why its effort lives inside
-//! [`Opus5Thinking`] rather than beside it: the refused combination is
-//! unwritable rather than rejected at runtime.
-//!
-//! Mutually exclusive settings are sum types, never two optional fields a caller
-//! must keep in sync — [`Sonnet4_6Sampling`] is temperature *or* adaptive
-//! thinking, because the API pins temperature to 1.0 under adaptive thinking.
+//! explicitly. Opus 5's accepted effort range depends on whether thinking is on,
+//! so its effort lives inside [`Opus5Thinking`]. Mutually exclusive settings are
+//! sum types, never two optional fields a caller must keep in sync, as
+//! [`Sonnet4_6Sampling`] shows.
 //!
 //! Alongside the parameters, [`ModelId`] carries the documented per-model
 //! constants: context window, maximum output, cacheable-prefix minimum,
@@ -632,6 +628,10 @@ impl Opus5 {
 }
 
 /// Whether Opus 5 thinks, and at what effort.
+///
+/// The effort lives inside the thinking state rather than beside it, because the
+/// accepted range depends on whether thinking is on: the refused combination is
+/// unwritable rather than rejected at runtime.
 pub enum Opus5Thinking {
     /// Adaptive thinking on. The state an omitted `thinking` field would also
     /// produce, emitted explicitly.
@@ -894,6 +894,9 @@ impl Sonnet4_6 {
 }
 
 /// Sonnet 4.6's two mutually exclusive sampling modes.
+///
+/// Temperature *or* adaptive thinking, never both, because the API pins
+/// temperature to 1.0 under adaptive thinking.
 pub enum Sonnet4_6Sampling {
     /// `Temperature::default()` (1.0) matches the API default when `temperature` is omitted.
     Temperature(Temperature),

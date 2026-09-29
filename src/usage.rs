@@ -7,29 +7,10 @@
 //! decodes them rather than skipping past them, and
 //! [`Usage::merge_cumulative`] is written so a later frame can never lose them.
 //!
-//! # Why the counts add up the way they do
-//!
 //! [`Usage::input_tokens`] is *not* the whole input. Anthropic documents it as
 //! the tokens after the last cache breakpoint — the part that was neither read
 //! from nor written to the cache. The whole input is the sum of the three,
 //! which is [`Usage::total_input_tokens`].
-//!
-//! # Merging is a pointwise maximum, and that is exact
-//!
-//! Anthropic documents the counts on `message_delta` as *cumulative*. Each
-//! field is therefore a counter that never decreases across one stream, so the
-//! most complete record of a stream is the pointwise maximum of every `usage`
-//! object it delivered. That operation is the join of a product lattice of
-//! counters: commutative, associative, idempotent, with the all-zero `Usage` as
-//! its identity. Three consequences fall out for free, and none of them needs a
-//! special case:
-//!
-//! * Frames may be merged in any order.
-//! * Merging the same frame twice changes nothing.
-//! * A frame that omits a field cannot zero it. This is not hypothetical: the
-//!   inference gateway sends a `message_stop` carrying only
-//!   `input_tokens` and `output_tokens`, and a last-writer-wins merge would
-//!   throw away exactly the two cache numbers this module exists to report.
 
 use serde::{Deserialize, Deserializer};
 
@@ -66,7 +47,7 @@ impl CacheCreation {
         self.ephemeral_5m_input_tokens + self.ephemeral_1h_input_tokens
     }
 
-    /// The pointwise maximum, as described in the module documentation.
+    /// The pointwise maximum, as described in [`Usage::merge_cumulative`].
     pub fn merge_cumulative(&mut self, other: Self) {
         self.ephemeral_5m_input_tokens = self.ephemeral_5m_input_tokens.max(other.ephemeral_5m_input_tokens);
         self.ephemeral_1h_input_tokens = self.ephemeral_1h_input_tokens.max(other.ephemeral_1h_input_tokens);
@@ -141,7 +122,7 @@ pub struct ServerToolUsage {
 }
 
 impl ServerToolUsage {
-    /// The pointwise maximum, as described in the module documentation.
+    /// The pointwise maximum, as described in [`Usage::merge_cumulative`].
     pub fn merge_cumulative(&mut self, other: Self) {
         self.web_search_requests = self.web_search_requests.max(other.web_search_requests);
         self.web_fetch_requests = self.web_fetch_requests.max(other.web_fetch_requests);
@@ -181,8 +162,20 @@ impl Usage {
 
     /// The pointwise maximum of two cumulative records.
     ///
-    /// See the module documentation for why this is the exact merge and not an
-    /// approximation of one.
+    /// Anthropic documents the counts on `message_delta` as *cumulative*. Each
+    /// field is therefore a counter that never decreases across one stream, so the
+    /// most complete record of a stream is the pointwise maximum of every `usage`
+    /// object it delivered. That operation is the join of a product lattice of
+    /// counters: commutative, associative, idempotent, with the all-zero `Usage` as
+    /// its identity. Three consequences fall out for free, and none of them needs a
+    /// special case:
+    ///
+    /// * Frames may be merged in any order.
+    /// * Merging the same frame twice changes nothing.
+    /// * A frame that omits a field cannot zero it. This is not hypothetical: the
+    ///   inference gateway sends a `message_stop` carrying only
+    ///   `input_tokens` and `output_tokens`, and a last-writer-wins merge would
+    ///   throw away exactly the two cache numbers this module exists to report.
     pub fn merge_cumulative(&mut self, other: &Self) {
         self.input_tokens = self.input_tokens.max(other.input_tokens);
         self.output_tokens = self.output_tokens.max(other.output_tokens);

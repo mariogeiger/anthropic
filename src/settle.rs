@@ -1,7 +1,5 @@
 //! Accumulating a stream, and the boundary where it becomes a finished message.
 //!
-//! # Why "settled" is a type and not a flag
-//!
 //! A streamed message is only trustworthy once a terminal event arrives. A
 //! connection can drop mid-answer, and the text collected so far looks exactly
 //! like a complete answer — same field, same characters, no error anywhere.
@@ -14,22 +12,6 @@
 //! consumes the accumulator: a truncated stream yields [`SettleError::Truncated`],
 //! and there is no other way to obtain a `Settled`. A caller who forgets to check
 //! gets a compile error, not a plausible answer.
-//!
-//! The Anthropic protocol makes this sharper than it sounds. `message_delta`
-//! carries the `stop_reason`, so a stream can look complete — "the model said
-//! `end_turn`" — one frame before it actually is. Only `message_stop` (or an
-//! `error`) ends it. Believing a `stop_reason` is believing a flag, and this
-//! module makes that unwritable.
-//!
-//! # Cost of accumulation
-//!
-//! Text and tool input arrive as many small fragments. Each is appended to the
-//! `String` of its block, which amortizes to linear in the total bytes:
-//! `String::push_str` doubles capacity, so *n* fragments cost O(*n*) copying
-//! rather than the O(*n*²) of rebuilding a joined string per fragment. Blocks
-//! live in a `BTreeMap` keyed by their wire `index`, so a repeated index updates
-//! in place instead of duplicating, and iteration is already in the order the
-//! final `content` array uses.
 
 use std::collections::BTreeMap;
 
@@ -104,6 +86,55 @@ impl From<FrameError> for SettleError {
 /// Deliberately offers no way to read a finished message out of itself. Feed it
 /// events with [`Self::consume`]; when the stream is exhausted call
 /// [`Self::settle`], which either produces a [`Settled`] or fails.
+///
+/// ```
+/// use anthropic::frame::data_payload;
+/// use anthropic::settle::{Outcome, Settling};
+///
+/// // Whatever your HTTP client hands you, line by line.
+/// let body = concat!(
+///     "event: message_start\n",
+///     r#"data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-5","content":[],"#,
+///     r#""usage":{"input_tokens":36,"cache_read_input_tokens":1043,"output_tokens":1}}}"#, "\n",
+///     "\n",
+///     "event: content_block_start\n",
+///     r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#, "\n",
+///     "\n",
+///     "event: content_block_delta\n",
+///     r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"21"}}"#, "\n",
+///     "\n",
+///     "event: message_delta\n",
+///     r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":45}}"#, "\n",
+///     "\n",
+///     "event: message_stop\n",
+///     r#"data: {"type":"message_stop"}"#, "\n",
+/// );
+///
+/// let mut settling = Settling::new();
+/// for line in body.lines() {
+///     if let Some(payload) = data_payload(line) {
+///         settling.consume_payload(payload)?;
+///     }
+/// }
+///
+/// // The only way to get a finished message. A stream cut off before
+/// // `message_stop` fails here instead of returning a half answer.
+/// let settled = settling.settle()?;
+/// assert_eq!(settled.text(), "21");
+/// assert!(matches!(settled.outcome, Outcome::Stopped { .. }));
+/// assert_eq!(settled.usage.cache_read_input_tokens, 1_043);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+///
+/// A stream looks complete one frame before it is: `message_delta` carries the
+/// `stop_reason`, but only `message_stop` or an `error` ends it. Believing a
+/// `stop_reason` is believing a flag, so the settled state is a type instead.
+///
+/// Accumulation is linear in the bytes received. Each fragment is appended to
+/// its block's `String`, whose doubling capacity makes *n* fragments cost O(*n*)
+/// copying rather than the O(*n*²) of rebuilding a joined string. Blocks live in
+/// a `BTreeMap` keyed by their wire `index`, so a repeated index updates in place
+/// and iteration is already in the order of the final `content` array.
 ///
 /// An accumulator is not a message, and the compiler enforces it rather than the
 /// documentation asking politely. There is no `blocks` field to reach for:

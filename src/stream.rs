@@ -5,32 +5,17 @@
 //! carries. This module turns one such payload into a [`StreamEvent`];
 //! [`crate::settle`] turns a sequence of them into a finished message.
 //!
-//! # The documented event flow
-//!
 //! `message_start` opens the message with empty content. Then, per content
 //! block, a `content_block_start`, some `content_block_delta` events, and a
 //! `content_block_stop`. Then one or more `message_delta` events carrying the
 //! stop reason and cumulative usage, and finally a single `message_stop`. A
-//! `ping` may appear anywhere, and an `error` may replace the rest.
+//! `ping` may appear anywhere, and an `error` may replace the rest. The blocks and
+//! deltas themselves live in [`crate::content`], where reassembly is defined;
+//! this module is only the envelope.
 //!
-//! The blocks and deltas themselves live in [`crate::content`], which is where
-//! reassembly is defined; this module is only the envelope.
-//!
-//! # Why an unknown event is not an error
-//!
-//! Anthropic's versioning policy states that new event types may be added and
-//! that client code should handle unknown ones gracefully. A decoder that errors
-//! on an event it has never seen is a decoder a routine server release breaks.
-//! So the unrecognized case is a variant — [`StreamEvent::Unmodeled`] — and never
-//! a [`FrameError`]. That variant also covers `ping`, which exists only to hold
-//! the connection open. "Well-formed, nothing to do here" is one situation, so it
-//! is one variant.
-//!
-//! # What *is* an error
-//!
-//! Bytes that are not JSON, a payload that is not an object, a missing `type`, a
-//! field whose type contradicts the schema, and a `usage` object that will not
-//! deserialize. Those are broken frames, not new ones. See [`FrameError`].
+//! An event this crate does not know is [`StreamEvent::Unmodeled`], never an
+//! error; see that variant for why. Only a frame that contradicts the schema is a
+//! [`FrameError`].
 
 use serde_json::Value;
 
@@ -212,8 +197,17 @@ pub enum StreamEvent {
     Error(StreamedError),
     /// A well-formed event this crate does not model, `ping` included.
     ///
-    /// Never an error, by design: see the module documentation. Ignoring it is
-    /// correct, and its `kind` is worth logging once.
+    /// Never an error, by design. Anthropic's versioning policy states that new
+    /// event types may be added and that client code should handle unknown ones
+    /// gracefully; a decoder that errors on an event it has never seen is a
+    /// decoder a routine server release breaks. `ping` exists only to hold the
+    /// connection open, and "well-formed, nothing to do here" is one situation, so
+    /// it is one variant. What *is* an error — bytes that are not JSON, a payload
+    /// that is not an object, a missing `type`, a field whose type contradicts the
+    /// schema, a `usage` object that will not deserialize — is a broken frame, not
+    /// a new one, and is a [`FrameError`].
+    ///
+    /// Ignoring it is correct, and its `kind` is worth logging once.
     Unmodeled {
         /// The event's `type`.
         kind: String,

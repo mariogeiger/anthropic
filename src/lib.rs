@@ -4,83 +4,18 @@
 //! carrying only the parameters that model accepts, validated newtypes, and cache
 //! breakpoints in a fixed set of slots that mirrors the API's limit one-to-one.
 //! Inbound, a streaming decoder and a response decoder that make a truncated
-//! stream unreadable as a finished one.
+//! stream unreadable as a finished one; [`settle::Settling`] shows a stream read
+//! end to end.
+//!
+//! * Outbound: [`block`], [`context`], [`document`], [`model`], [`request`],
+//!   [`system`], [`tool_choice`].
+//! * Both directions: [`web_search`].
+//! * Inbound: [`frame`], [`content`], [`stream`], [`settle`],
+//!   [`input_transformation`], [`response`], [`prompt_cache`], [`usage`].
+//! * Shared: [`values`], re-exported at the root.
 //!
 //! See [`SOUL.md`](https://github.com/mariogeiger/anthropic/blob/main/SOUL.md)
 //! for the mission and the design rules the whole crate follows.
-//!
-//! # Outbound
-//!
-//! * [`block`] — the content blocks a caller sends.
-//! * [`context`] — cache-safe, append-only conversation state.
-//! * [`document`] — source material the model may quote, and the citations it
-//!   quotes it with.
-//! * [`model`] — one type per model, carrying only the parameters it accepts.
-//! * [`request`] — per-call parameters and the `/v1/messages` body.
-//! * [`system`] — system content: the top-level prompt, and an instruction added
-//!   mid-conversation without disturbing the cached prefix.
-//! * [`tool_choice`] — whether, and which, tool the model must call.
-//!
-//! # Both directions
-//!
-//! * [`web_search`] — the web search server tool, and the results a search
-//!   leaves in the model's turn for the next request to replay.
-//!
-//! # Inbound
-//!
-//! * [`frame`] — the Server-Sent Events envelope, and what a broken frame is.
-//! * [`content`] — the content blocks a message is made of, and their deltas.
-//! * [`stream`] — one streamed frame becomes one typed event.
-//! * [`settle`] — a stream becomes a finished message, or does not.
-//! * [`input_transformation`] — replayed input the API dropped before inference.
-//! * [`response`] — a non-streamed response body.
-//! * [`prompt_cache`] — what the prompt cache will read, write and bill.
-//! * [`usage`] — what a request cost, and what the cache did.
-//!
-//! # Shared
-//!
-//! * [`values`] — the enums that mirror API JSON values, re-exported at the root.
-//!
-//! # Reading a stream
-//!
-//! ```
-//! use anthropic::frame::data_payload;
-//! use anthropic::settle::{Outcome, Settling};
-//!
-//! // Whatever your HTTP client hands you, line by line.
-//! let body = concat!(
-//!     "event: message_start\n",
-//!     r#"data: {"type":"message_start","message":{"id":"msg_1","model":"claude-opus-5","content":[],"#,
-//!     r#""usage":{"input_tokens":36,"cache_read_input_tokens":1043,"output_tokens":1}}}"#, "\n",
-//!     "\n",
-//!     "event: content_block_start\n",
-//!     r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#, "\n",
-//!     "\n",
-//!     "event: content_block_delta\n",
-//!     r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"21"}}"#, "\n",
-//!     "\n",
-//!     "event: message_delta\n",
-//!     r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":45}}"#, "\n",
-//!     "\n",
-//!     "event: message_stop\n",
-//!     r#"data: {"type":"message_stop"}"#, "\n",
-//! );
-//!
-//! let mut settling = Settling::new();
-//! for line in body.lines() {
-//!     if let Some(payload) = data_payload(line) {
-//!         settling.consume_payload(payload)?;
-//!     }
-//! }
-//!
-//! // The only way to get a finished message. A stream cut off before
-//! // `message_stop` fails here instead of returning a half answer.
-//! let settled = settling.settle()?;
-//! assert_eq!(settled.text(), "21");
-//! assert!(matches!(settled.outcome, Outcome::Stopped { .. }));
-//! assert_eq!(settled.usage.cache_read_input_tokens, 1_043);
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
 
 #![deny(missing_docs)]
 

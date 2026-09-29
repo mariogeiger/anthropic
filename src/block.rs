@@ -7,23 +7,12 @@
 //! refuses that. Where the sets meet — thinking, tool calls, server-tool blocks —
 //! it is replay: the model's own blocks sent back on the next turn.
 //!
-//! # Cache metadata is not reachable from here
-//!
-//! Every block carries a `cache_control` slot and every one of them is
-//! crate-private, with no public constructor for the value that fills it. A
-//! breakpoint is placed only through a [`crate::context::CacheSlot`], which keeps
-//! the slot bookkeeping and the content it points at from disagreeing. That is why
-//! these structs have public content fields and no public `cache_control`: the
-//! content is already exact, the metadata carries a cross-message invariant.
-//!
-//! # Whose job the `type` tag is
-//!
-//! [`ContentBlock`] writes the tag for the whole block, so the structs inside it
-//! serialize their fields alone. The same structs appear in positions where no
-//! enum writes a tag — a search result's content, the top-level system prompt —
-//! and there they serialize with it. [`TextBlock`] is the one that sits in both,
-//! which is why its own impl includes the tag and [`ContentBlock::Text`] overrides
-//! that.
+//! Every block's `cache_control` slot is crate-private, so these structs have
+//! public content fields and no public `cache_control`: the content is already
+//! exact, while the metadata carries a cross-message invariant that only a
+//! [`crate::context::CacheSlot`] keeps. [`ContentBlock`] writes the `type` tag
+//! for the whole block; [`TextBlock`] explains the one struct that also writes
+//! its own.
 
 use serde::Serialize;
 use serde_json::Value;

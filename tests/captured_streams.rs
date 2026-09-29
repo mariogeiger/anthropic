@@ -1,24 +1,27 @@
 //! Decoding real captured traffic.
 //!
 //! Every file in `tests/captured/` is a verbatim body from a live Messages
-//! endpoint, saved from `gateway/claude-opus-5` via
-//! the inference gateway. Nothing here is invented: the frame order, the
-//! field spellings, the fields the documentation does not mention, and the empty
-//! thinking block that `display: "omitted"` produces are all as they arrived. All
-//! but `citations.sse` were saved on 2026-08-29; that one on 2026-08-30.
-//! `fable-5-1-binding.sse` and `fable-5-1-thinking-dropped.json` are first-party
-//! Fable 5.1 responses captured on 2026-09-03. The first reports a clean check;
-//! the second reports a signed thinking block dropped after its system prefix
-//! changed.
-//!
-//! Two files were trimmed, and only by dropping repetition: long runs of
-//! `thinking_delta` and `text_delta` frames were cut to the first few per block,
-//! and signature values to their first 40 characters. No frame kind, field, or
-//! ordering was changed, so what is exercised is still the wire.
+//! endpoint. Nothing here is invented: the frame order, the field spellings, the
+//! fields the documentation does not mention, and the empty thinking block that
+//! `display: "omitted"` produces are all as they arrived. Two files were trimmed,
+//! and only by dropping repetition, so what is exercised is still the wire.
 //!
 //! The unit tests in `src/` cover each frame kind in isolation. These cover what
 //! only a whole body can: that a stream of hundreds of frames settles into one
 //! message, and that the failure modes are the ones the types promise.
+
+// Provenance.
+//
+// Saved from `gateway/claude-opus-5` via the inference gateway. All but
+// `citations.sse` were saved on 2026-08-29; that one on 2026-08-30.
+// `fable-5-1-binding.sse` and `fable-5-1-thinking-dropped.json` are first-party
+// Fable 5.1 responses captured on 2026-09-03. The first reports a clean check;
+// the second reports a signed thinking block dropped after its system prefix
+// changed.
+//
+// The trimmed files had long runs of `thinking_delta` and `text_delta` frames
+// cut to the first few per block, and signature values cut to their first 40
+// characters. No frame kind, field, or ordering was changed.
 
 use anthropic::content::StreamedBlock;
 use anthropic::document::Citation;

@@ -1,36 +1,11 @@
 //! Whether, and which, tool the model must call.
 //!
-//! # This parameter costs message cache, and only message cache
-//!
-//! Anthropic documents the cache hierarchy as `tools → system → messages`, where
-//! a change at one level invalidates that level and every level after it. Under
-//! that rule `tool_choice` is a special case worth knowing: it invalidates the
-//! *message* cache while leaving the tools and system caches valid.
-//!
-//! | What changes      | Tools cache | System cache | Messages cache |
-//! |-------------------|-------------|--------------|----------------|
-//! | Tool definitions  | invalid     | invalid      | invalid        |
-//! | `tool_choice`     | **valid**   | **valid**    | invalid        |
-//!
-//! The asymmetry has a reason. `tool_choice` is rendered into the prompt near the
-//! messages, not into the tool definitions, so the prefix covering tools and
-//! system is byte-identical across the change. This is why it is a type of its
-//! own carrying that fact, rather than a field on a model: a caller who
+//! Changing `tool_choice` invalidates the *message* cache and only the message
+//! cache: it renders into the prompt near the messages, not into the tool
+//! definitions, so the tools and system prefix stays byte-identical. A caller who
 //! recomputes it per turn pays for a fresh message-cache write every turn, and
-//! nothing about the code would say so.
-//!
-//! A conversation whose tools and system prompt are large and whose message tail
-//! is short therefore loses little by changing it — and one that caches a long
-//! message history loses that history. Anthropic's own troubleshooting list names
-//! `tool_choice` first among things to hold constant between calls.
-//!
-//! # `None` versus an empty tool list
-//!
-//! [`ToolChoice::None`] withholds every tool while leaving the definitions in the
-//! prompt, so the tools cache stays warm and a later turn can allow them again
-//! without a re-write. Sending no tools at all changes the definitions, which
-//! invalidates everything. They are different operations, and only one of them is
-//! cheap.
+//! nothing about the code would say so — which is why it is a type of its own
+//! carrying that fact, documented on [`ToolChoice`].
 
 use serde::Serialize;
 
@@ -41,6 +16,22 @@ use serde::Serialize;
 /// stays distinguishable from "explicitly auto" — the two are equivalent to the
 /// model but not to the wire, and the crate does not invent a value the caller
 /// did not send.
+///
+/// # Changing it costs message cache, and only message cache
+///
+/// Anthropic documents the cache hierarchy as `tools → system → messages`, where
+/// a change at one level invalidates that level and every level after it. Under
+/// that rule `tool_choice` is a special case worth knowing:
+///
+/// | What changes      | Tools cache | System cache | Messages cache |
+/// |-------------------|-------------|--------------|----------------|
+/// | Tool definitions  | invalid     | invalid      | invalid        |
+/// | `tool_choice`     | **valid**   | **valid**    | invalid        |
+///
+/// A conversation whose tools and system prompt are large and whose message tail
+/// is short therefore loses little by changing it — and one that caches a long
+/// message history loses that history. Anthropic's own troubleshooting list names
+/// `tool_choice` first among things to hold constant between calls.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolChoice {
     /// The model decides whether to call a tool. The API's default.
@@ -66,8 +57,13 @@ pub enum ToolChoice {
     },
     /// The model may not call any tool.
     ///
-    /// The definitions stay in the prompt, so the tools cache stays warm — see
-    /// the module documentation. Carries no parallel-use flag: with no calls
+    /// Not the same as sending no tools. This withholds every tool while leaving
+    /// the definitions in the prompt, so the tools cache stays warm and a later
+    /// turn can allow them again without a re-write; removing the tools changes
+    /// the definitions, which invalidates everything. Only one of the two is
+    /// cheap.
+    ///
+    /// Carries no parallel-use flag: with no calls
     /// permitted there is nothing to parallelize, and the API rejects the
     /// combination, so it is absent from the type rather than refused at runtime.
     None,

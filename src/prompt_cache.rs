@@ -11,55 +11,8 @@
 //! as its [`CacheKeys`], which can be recorded when it is sent and replayed
 //! later, under the TTLs sent or under others.
 //!
-//! # The rules
-//!
-//! * The prompt is `tools`, then `system`, then `messages`, and a cache entry is
-//!   the exact prefix ending at one position — one tool, one system block, or
-//!   one message block. Changing anything at or before a position changes its
-//!   prefix. Some settings render as a whole level: enabling citations moves the
-//!   system prompt and everything after it, and forcing a tool call moves the
-//!   messages. Where the thinking configuration and effort render is per model.
-//!   Whether an image is present renders nowhere, and which tool is forced and
-//!   how thinking is displayed render after every cacheable position, so none of
-//!   them moves anything. Deferred tools are not in the prompt.
-//! * An entry exists only where a breakpoint placed it: a prefix another entry
-//!   merely contains is not found. Every breakpoint whose prefix holds at least
-//!   [`ModelId::min_cacheable_prefix_tokens`] places its entry; below that it is
-//!   silently skipped.
-//! * A read looks back from each breakpoint, last first, over at most
-//!   [`LOOKBACK_POSITIONS`] positions counting the breakpoint itself, where a run
-//!   of consecutive `tool_use` blocks counts once and so does a run of
-//!   `tool_result` blocks. The first live entry found is read, which is the
-//!   longest one reachable.
-//! * An entry lives for its TTL from the *start* of the last request that wrote
-//!   it or read through it. Reading an entry refreshes it and what it was built
-//!   on: the entries its writer read or wrote before it, and theirs in turn. An
-//!   entry that only shares its prefix, written by a request that missed it, is
-//!   not refreshed, and writing never refreshes.
-//! * `cache_read_input_tokens` is the entry's size; `cache_creation_input_tokens`
-//!   is the last breakpoint's size less that, billed once however many
-//!   breakpoints it spans, at the 1-hour rate up to the last 1-hour breakpoint;
-//!   `input_tokens` is the rest. Breakpoints at or before the entry read place
-//!   their entries free, living as long as the entry read.
-//!
-//! Where this departs from the documentation it follows first-party
-//! measurements of 2026-09-25: the lookback window, the free entries at earlier
-//! breakpoints, what a read refreshes, and that neither `tool_choice`
-//! `auto` against `none` nor the presence of an image moves anything, on every
-//! model measured.
-//!
-//! Not modelled: automatic top-level caching, two requests in flight at once
-//! (an entry is readable only once its writing response has begun), thinking
-//! blocks the server strips or drops from replayed history, the seconds past a
-//! TTL in which the server may still read an entry (first-party: read 310 s
-//! after a 5-minute write, gone by 315 s), and entries lost before their TTL.
-//! Loss is real and not a function of the requests: replaying one recorded
-//! sequence of bodies first-party read a different entry at some steps each
-//! time, and never more than predicted. [`PromptCache::explain`] takes the
-//! usage the server reported and accounts for the loss it reveals, so the
-//! prediction stays exact for everything else.
-//!
-//! [`ModelId::min_cacheable_prefix_tokens`]: crate::model::ModelId::min_cacheable_prefix_tokens
+//! The rules it replays, and where they depart from the documentation, are
+//! stated on [`PromptCache`].
 
 mod keys;
 mod render;
@@ -261,6 +214,56 @@ struct Entry {
 /// Keyed by the digest of the exact rendered prefix, so an entry is found only
 /// by a request whose prompt agrees with the writer's up to that position —
 /// which is the whole of the server's invalidation rule.
+///
+/// # The rules
+///
+/// * The prompt is `tools`, then `system`, then `messages`, and a cache entry is
+///   the exact prefix ending at one position — one tool, one system block, or
+///   one message block. Changing anything at or before a position changes its
+///   prefix. Some settings render as a whole level: enabling citations moves the
+///   system prompt and everything after it, and forcing a tool call moves the
+///   messages. Where the thinking configuration and effort render is per model.
+///   Whether an image is present renders nowhere, and which tool is forced and
+///   how thinking is displayed render after every cacheable position, so none of
+///   them moves anything. Deferred tools are not in the prompt.
+/// * An entry exists only where a breakpoint placed it: a prefix another entry
+///   merely contains is not found. Every breakpoint whose prefix holds at least
+///   [`ModelId::min_cacheable_prefix_tokens`] places its entry; below that it is
+///   silently skipped.
+/// * A read looks back from each breakpoint, last first, over at most
+///   [`LOOKBACK_POSITIONS`] positions counting the breakpoint itself, where a run
+///   of consecutive `tool_use` blocks counts once and so does a run of
+///   `tool_result` blocks. The first live entry found is read, which is the
+///   longest one reachable.
+/// * An entry lives for its TTL from the *start* of the last request that wrote
+///   it or read through it. Reading an entry refreshes it and what it was built
+///   on: the entries its writer read or wrote before it, and theirs in turn. An
+///   entry that only shares its prefix, written by a request that missed it, is
+///   not refreshed, and writing never refreshes.
+/// * `cache_read_input_tokens` is the entry's size; `cache_creation_input_tokens`
+///   is the last breakpoint's size less that, billed once however many
+///   breakpoints it spans, at the 1-hour rate up to the last 1-hour breakpoint;
+///   `input_tokens` is the rest. Breakpoints at or before the entry read place
+///   their entries free, living as long as the entry read.
+///
+/// Where this departs from the documentation it follows first-party
+/// measurements of 2026-09-25: the lookback window, the free entries at earlier
+/// breakpoints, what a read refreshes, and that neither `tool_choice`
+/// `auto` against `none` nor the presence of an image moves anything, on every
+/// model measured.
+///
+/// Not modelled: automatic top-level caching, two requests in flight at once
+/// (an entry is readable only once its writing response has begun), thinking
+/// blocks the server strips or drops from replayed history, the seconds past a
+/// TTL in which the server may still read an entry (first-party: read 310 s
+/// after a 5-minute write, gone by 315 s), and entries lost before their TTL.
+/// Loss is real and not a function of the requests: replaying one recorded
+/// sequence of bodies first-party read a different entry at some steps each
+/// time, and never more than predicted. [`PromptCache::explain`] takes the
+/// usage the server reported and accounts for the loss it reveals, so the
+/// prediction stays exact for everything else.
+///
+/// [`ModelId::min_cacheable_prefix_tokens`]: crate::model::ModelId::min_cacheable_prefix_tokens
 #[derive(Debug, Default)]
 pub struct PromptCache {
     entries: HashMap<Digest, Entry>,

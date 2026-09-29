@@ -1,29 +1,16 @@
 //! Source material the model may quote, and the citations it quotes it with.
 //!
-//! # Why a document is not just text
-//!
 //! Pasting a document into a text block works, and loses the one thing a document
 //! is for: the model can then say *where* an answer came from. A `document` block
 //! with citations enabled makes the API emit a [`Citation`] beside each text block
 //! it grounds, naming the exact characters, page, or block it drew on. A caller
 //! can render a footnote; a caller with pasted text can only take the model's word.
 //!
-//! # Why citations are opt-in
-//!
-//! Citations cost output tokens and change how the model writes, so
-//! [`DocumentBlock::cited`] asks for them and [`DocumentBlock::new`] does not.
-//! Absent is not the same as `false`: [`Citations`] is emitted only when a caller
-//! decides, so a request that never mentioned citations is byte-identical to what
-//! it was before this module existed, and its prompt cache still matches.
-//!
-//! # A document and a search result differ in what they claim
-//!
-//! [`DocumentBlock`] is material the caller supplies: a PDF, plain text, a URL for
-//! the API to fetch. [`SearchResultBlock`] is material a *search* returned, and it
-//! carries the source and title that make a citation to it meaningful. The API
-//! counts them separately — `document_index` versus `search_result_index` — so they
-//! are two types, and a citation into one cannot be read as a citation into the
-//! other.
+//! Citations are opt-in; see [`Citations`]. [`DocumentBlock`] is material the
+//! caller supplies and [`SearchResultBlock`] material a search returned. The API
+//! counts them separately — `document_index` versus `search_result_index` — so
+//! they are two types, and a citation into one cannot be read as a citation into
+//! the other.
 
 use serde::Serialize;
 
@@ -90,8 +77,13 @@ impl DocumentSource {
 /// Whether the model may cite a block, as the API's `citations` object.
 ///
 /// A struct with one field rather than a bare `bool`, because that is the wire
-/// shape and the crate models the wire. It appears only where a caller asked; see
-/// the module documentation.
+/// shape and the crate models the wire.
+///
+/// Opt-in, because citations cost output tokens and change how the model writes:
+/// [`DocumentBlock::cited`] asks for them and [`DocumentBlock::new`] does not.
+/// Absent is not the same as `false`. This is emitted only when a caller decides,
+/// so a request that never mentioned citations is byte-identical to what it was
+/// before this module existed, and its prompt cache still matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Citations {
     /// Whether the model may cite this block.
@@ -100,7 +92,8 @@ pub struct Citations {
 
 // ── Blocks ───────────────────────────────────────────────────────────────────
 
-/// Source material the caller supplies for the model to read and quote.
+/// Source material the caller supplies for the model to read and quote: a PDF,
+/// plain text, a URL for the API to fetch.
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentBlock {
     /// Where its bytes come from.
