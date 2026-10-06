@@ -1,4 +1,5 @@
 use super::*;
+use crate::block::{RedactedThinkingBlock, ThinkingBlock};
 use crate::request::{Model, ModelId, Request};
 
 fn req(ctx: &Context) -> serde_json::Value {
@@ -476,4 +477,30 @@ fn a_system_message_may_follow_a_turn_ending_in_a_search_result() {
     ))]);
     assert_eq!(ctx.push_system_text("Cite every source.").err(), None);
     assert_eq!(ctx.misplaced_system_message(), None);
+}
+
+#[test]
+fn a_rolling_breakpoint_skips_the_thinking_an_answer_ends_on() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("one");
+    ctx.push_assistant(vec![
+        ContentBlock::text("so far"),
+        ContentBlock::Thinking(ThinkingBlock::replay("unfinished", "sig")),
+        ContentBlock::RedactedThinking(RedactedThinkingBlock::replay("opaque")),
+    ]);
+    ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+    let v = req(&ctx);
+    assert_eq!(v["messages"][1]["content"][0]["cache_control"]["ttl"], "5m");
+    for thinking in 1..3 {
+        assert!(v["messages"][1]["content"][thinking].get("cache_control").is_none());
+    }
+}
+
+#[test]
+fn an_answer_of_thinking_alone_takes_no_rolling_breakpoint() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("one");
+    ctx.push_assistant(vec![ContentBlock::Thinking(ThinkingBlock::replay("unfinished", "sig"))]);
+    assert_eq!(ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap_err(), RollCacheError::NoBlocksToCache);
+    assert!(req(&ctx)["messages"][1]["content"][0].get("cache_control").is_none());
 }

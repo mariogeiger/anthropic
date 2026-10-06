@@ -225,16 +225,20 @@ impl Message {
     fn cache_control_at(&mut self, block: usize) -> Option<&mut Option<CacheControl>> {
         match self {
             Message::User(content) | Message::Assistant(content) => {
-                content.get_mut(block).map(ContentBlock::cache_control_mut)
+                content.get_mut(block).and_then(ContentBlock::cache_control_mut)
             }
             Message::System(content) => content.cache_control_at(block),
         }
     }
 
-    fn block_count(&self) -> usize {
+    /// The last block that may carry a breakpoint, which skips the thinking an
+    /// unfinished answer may end on.
+    fn last_breakpoint_block(&self) -> Option<usize> {
         match self {
-            Message::User(content) | Message::Assistant(content) => content.len(),
-            Message::System(content) => content.block_count(),
+            Message::User(content) | Message::Assistant(content) => {
+                content.iter().rposition(ContentBlock::takes_breakpoint)
+            }
+            Message::System(content) => content.block_count().checked_sub(1),
         }
     }
 
@@ -375,7 +379,8 @@ impl Serialize for SystemPrompt {
 pub enum RollCacheError {
     /// Slot is occupied by a `system`/`tools` anchor and cannot be moved.
     SlotOccupiedByAnchor(CacheSlot),
-    /// Context has no message content to attach a rolling breakpoint to.
+    /// The last message holds no block that may carry a rolling breakpoint:
+    /// none at all, or only thinking.
     NoBlocksToCache,
     /// The last message is turn-scoped. Its text deliberately never enters a
     /// cache key, so the breakpoint belongs on the preceding user turn instead.
@@ -674,7 +679,8 @@ impl Context {
 
     // ── Cache slot ops ──────────────────────────────────────────────────────
 
-    /// Move `slot` to the last block of the last message with the given TTL.
+    /// Move `slot` to the last block of the last message that may carry a
+    /// breakpoint, with the given TTL.
     /// Clears any previous placement (metadata only — content never touched).
     /// Validates TTL ordering and mid-evolution conflicts before mutating.
     pub fn roll_cache(&mut self, slot: CacheSlot, ttl: CacheTtl) -> Result<(), RollCacheError> {
@@ -816,7 +822,7 @@ impl Context {
         if matches!(self.messages[m], Message::System(SystemMessage::TurnScoped(_))) {
             return Err(RollCacheError::TurnScopedMessageNotCacheable);
         }
-        let b = self.messages[m].block_count().checked_sub(1).ok_or(RollCacheError::NoBlocksToCache)?;
+        let b = self.messages[m].last_breakpoint_block().ok_or(RollCacheError::NoBlocksToCache)?;
         Ok((m, b))
     }
 

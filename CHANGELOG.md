@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.17.1
+
+- A rolling cache breakpoint no longer lands on a thinking or redacted
+  thinking block, which the API refuses with `thinking.cache_control: Extra
+  inputs are not permitted`. It goes on the last block of the tail message
+  that may carry one; a tail message of thinking alone, as an unfinished answer
+  leaves, takes none and `roll_cache` answers `NoBlocksToCache`. Thinking
+  blocks no longer hold a `cache_control` at all.
+
+  `anthropic` is now 0.17.1.
+
 ## 0.17.0
 
 - The display vocabulary is split by what the API accepts rather than by

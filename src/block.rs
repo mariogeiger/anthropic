@@ -230,14 +230,12 @@ pub struct ThinkingBlock {
     pub thinking: String,
     /// The signature the API issued for it.
     pub signature: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cache_control: Option<CacheControl>,
 }
 
 impl ThinkingBlock {
     /// Replays one complete thinking block exactly as the model returned it.
     pub fn replay(thinking: impl Into<String>, signature: impl Into<String>) -> Self {
-        Self { thinking: thinking.into(), signature: signature.into(), cache_control: None }
+        Self { thinking: thinking.into(), signature: signature.into() }
     }
 }
 
@@ -246,14 +244,12 @@ impl ThinkingBlock {
 pub struct RedactedThinkingBlock {
     /// The opaque payload.
     pub data: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) cache_control: Option<CacheControl>,
 }
 
 impl RedactedThinkingBlock {
     /// Replays one redacted thinking block without interpreting its payload.
     pub fn replay(data: impl Into<String>) -> Self {
-        Self { data: data.into(), cache_control: None }
+        Self { data: data.into() }
     }
 }
 
@@ -406,19 +402,26 @@ impl ContentBlock {
         })
     }
 
-    pub(crate) fn cache_control_mut(&mut self) -> &mut Option<CacheControl> {
+    /// Where this block carries a breakpoint, or `None` for thinking, which
+    /// the API refuses one: `thinking.cache_control: Extra inputs are not
+    /// permitted`.
+    pub(crate) fn cache_control_mut(&mut self) -> Option<&mut Option<CacheControl>> {
         match self {
-            Self::Text(b) => &mut b.cache_control,
-            Self::Image(b) => &mut b.cache_control,
-            Self::ToolUse(b) => &mut b.cache_control,
-            Self::ToolResult(b) => &mut b.cache_control,
-            Self::Thinking(b) => &mut b.cache_control,
-            Self::RedactedThinking(b) => &mut b.cache_control,
-            Self::ServerToolUse(b) => &mut b.cache_control,
-            Self::WebSearchToolResult(b) => &mut b.cache_control,
-            Self::Document(b) => &mut b.cache_control,
-            Self::SearchResult(b) => &mut b.cache_control,
+            Self::Text(b) => Some(&mut b.cache_control),
+            Self::Image(b) => Some(&mut b.cache_control),
+            Self::ToolUse(b) => Some(&mut b.cache_control),
+            Self::ToolResult(b) => Some(&mut b.cache_control),
+            Self::Thinking(_) | Self::RedactedThinking(_) => None,
+            Self::ServerToolUse(b) => Some(&mut b.cache_control),
+            Self::WebSearchToolResult(b) => Some(&mut b.cache_control),
+            Self::Document(b) => Some(&mut b.cache_control),
+            Self::SearchResult(b) => Some(&mut b.cache_control),
         }
+    }
+
+    /// Whether this block may carry a breakpoint; see [`Self::cache_control_mut`].
+    pub(crate) const fn takes_breakpoint(&self) -> bool {
+        !matches!(self, Self::Thinking(_) | Self::RedactedThinking(_))
     }
 }
 
