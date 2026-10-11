@@ -47,10 +47,10 @@ model's type. Adding support for another model means a new type carrying only it
 accepted parameters — never widening an existing one.
 
 The subsets are not cosmetically different. Thinking is always on for Opus 5.5 and Fable 5 and
-has no off state; on Opus 4.8 "off" is an *omitted* `thinking` field; on Opus 5
-and Sonnet 5 an omitted field leaves thinking *on*, so off must be stated; on
+has no off state; on Opus 4.8 "off" is an *omitted* `thinking` field; on Opus 5,
+Sonnet 5 and Haiku 5.5 an omitted field leaves thinking *on*, so off must be stated; on
 Sonnet 5.5 off is stated as `between_tools`, because `disabled` is refused. Opus
-5.5 never has an off state at all. Opus 5 and Sonnet 5.5
+5.5 never has an off state at all. Opus 5, Sonnet 5.5 and Haiku 5.5
 make the accepted effort range depend on whether thinking is on, which is why
 their effort lives *inside* their thinking state rather than beside it.
 

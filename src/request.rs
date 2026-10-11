@@ -29,10 +29,11 @@ use serde::Serialize;
 // meaning what it always did without shadowing this module's own wire structs.
 // The canonical home is [`crate::model`].
 pub use crate::model::{
-    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Model, ModelId, Month, Opus4_8,
-    Opus4_8Effort, Opus4_8Thinking, Opus5, Opus5_5, Opus5_5Effort, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort,
-    Pricing, Sonnet4_6, Sonnet4_6Effort, Sonnet4_6Sampling, Sonnet5, Sonnet5_5, Sonnet5_5BetweenToolsEffort,
-    Sonnet5_5Effort, Sonnet5_5Thinking, Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
+    Fable5, Fable5_1, Fable5_1Effort, Fable5Effort, Haiku4_5, Haiku4_5Thinking, Haiku5_5, Haiku5_5Effort,
+    Haiku5_5Thinking, Haiku5_5ThinkingOffEffort, Model, ModelId, Month, Opus4_8, Opus4_8Effort, Opus4_8Thinking, Opus5,
+    Opus5_5, Opus5_5Effort, Opus5Effort, Opus5Thinking, Opus5ThinkingOffEffort, Pricing, Sonnet4_6, Sonnet4_6Effort,
+    Sonnet4_6Sampling, Sonnet5, Sonnet5_5, Sonnet5_5BetweenToolsEffort, Sonnet5_5Effort, Sonnet5_5Thinking,
+    Sonnet5Effort, Sonnet5Thinking, Temperature, TemperatureError, YearMonth,
 };
 
 // ── Request ──────────────────────────────────────────────────────────────────
@@ -543,6 +544,7 @@ impl<'a> Request<'a> {
             Model::Opus5(model) => matches!(model.thinking, Opus5Thinking::Adaptive { .. }),
             Model::Opus4_8(model) => matches!(model.thinking, Opus4_8Thinking::Adaptive { .. }),
             Model::Sonnet5_5(model) => matches!(model.thinking, Sonnet5_5Thinking::Adaptive { .. }),
+            Model::Haiku5_5(model) => matches!(model.thinking, Haiku5_5Thinking::Adaptive { .. }),
             Model::Sonnet5(model) => matches!(model.thinking, Sonnet5Thinking::Adaptive { .. }),
             Model::Sonnet4_6(model) => matches!(model.sampling, Sonnet4_6Sampling::Adaptive { .. }),
             Model::Haiku4_5(model) => matches!(model.thinking, Haiku4_5Thinking::Enabled { .. }),
@@ -570,7 +572,8 @@ fn display_with_updates(model: &Model) -> Option<ThinkingDisplayWithUpdates> {
         Model::Opus5_5(Opus5_5 { display, .. })
         | Model::Fable5_1(Fable5_1 { display, .. })
         | Model::Fable5(Fable5 { display, .. })
-        | Model::Sonnet5_5(Sonnet5_5 { thinking: Sonnet5_5Thinking::Adaptive { display, .. } }) => Some(*display),
+        | Model::Sonnet5_5(Sonnet5_5 { thinking: Sonnet5_5Thinking::Adaptive { display, .. } })
+        | Model::Haiku5_5(Haiku5_5 { thinking: Haiku5_5Thinking::Adaptive { display, .. } }) => Some(*display),
         _ => None,
     }
 }
@@ -586,6 +589,11 @@ fn thinking_off_effort(model: &Model) -> Option<PerMessageEffort> {
             Opus5ThinkingOffEffort::Low => PerMessageEffort::Low,
             Opus5ThinkingOffEffort::Medium => PerMessageEffort::Medium,
             Opus5ThinkingOffEffort::High => PerMessageEffort::High,
+        }),
+        Model::Haiku5_5(Haiku5_5 { thinking: Haiku5_5Thinking::Disabled { effort } }) => Some(match effort {
+            Haiku5_5ThinkingOffEffort::Low => PerMessageEffort::Low,
+            Haiku5_5ThinkingOffEffort::Medium => PerMessageEffort::Medium,
+            Haiku5_5ThinkingOffEffort::High => PerMessageEffort::High,
         }),
         Model::Sonnet5_5(Sonnet5_5 { thinking: Sonnet5_5Thinking::BetweenTools { effort } }) => Some(match effort {
             Sonnet5_5BetweenToolsEffort::Low => PerMessageEffort::Low,
@@ -780,6 +788,14 @@ impl Serialize for Request<'_> {
                 }
                 Sonnet5_5Thinking::BetweenTools { effort: e } => {
                     (None, Some(tag_only(ThinkingType::BetweenTools)), effort(e.as_str()))
+                }
+            },
+            Model::Haiku5_5(p) => match &p.thinking {
+                Haiku5_5Thinking::Adaptive { display, effort: e } => {
+                    (None, Some(adaptive(Some(display.as_str()))), effort(e.as_str()))
+                }
+                Haiku5_5Thinking::Disabled { effort: e } => {
+                    (None, Some(tag_only(ThinkingType::Disabled)), effort(e.as_str()))
                 }
             },
             Model::Opus4_8(p) => (

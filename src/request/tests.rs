@@ -119,6 +119,7 @@ fn binding_controls_serialize_on_every_enabled_thinking_shape() {
         (Model::opus_4_8().with_adaptive_thinking(ThinkingDisplay::Omitted).into(), 16),
         (Model::sonnet_5().into(), 16),
         (Model::sonnet_4_6().with_adaptive_thinking(ThinkingDisplay::Omitted).into(), 16),
+        (Model::haiku_5_5().into(), 16),
         (Model::haiku_4_5().with_thinking(1024).into(), 2048),
     ];
     for (model, max_tokens) in models {
@@ -138,6 +139,7 @@ fn binding_controls_serialize_on_every_enabled_thinking_shape() {
         Model::from(Model::opus_5().with_thinking_off(Opus5ThinkingOffEffort::High)),
         Model::from(Model::opus_4_8()),
         Model::from(Model::sonnet_5().with_thinking_off()),
+        Model::from(Model::haiku_5_5().with_thinking_off(Haiku5_5ThinkingOffEffort::High)),
         Model::from(Model::sonnet_4_6()),
         Model::from(Model::haiku_4_5()),
     ] {
@@ -486,6 +488,109 @@ fn sonnet_5_5_between_tools_refuses_an_effort_change() {
     system.push_user_text("one");
     system.push_system_text("be brief").unwrap();
     assert!(Request::new(&system, between_tools(), 16).is_ok(), "mid-conversation system messages are accepted");
+}
+
+#[test]
+fn haiku_5_5_default_is_explicit_adaptive_thinking_at_medium_effort() {
+    let v = req(Model::haiku_5_5());
+    assert_eq!(v["model"], "claude-haiku-5-5");
+    assert!(v.get("temperature").is_none(), "temperature is refused as deprecated");
+    assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "omitted"}));
+    assert_eq!(v["output_config"]["effort"], "medium");
+    let m: Model = Model::haiku_5_5().into();
+    assert_eq!(m.id(), ModelId::Haiku5_5);
+    assert_eq!(ModelId::Haiku5_5.api_id(), "claude-haiku-5-5");
+}
+
+#[test]
+fn haiku_5_5_thinking_off_is_a_bare_disabled_tag_with_its_own_effort() {
+    let v = req(Model::haiku_5_5().with_thinking_off(Haiku5_5ThinkingOffEffort::Low));
+    assert_eq!(v["thinking"], serde_json::json!({"type": "disabled"}));
+    assert_eq!(v["output_config"]["effort"], "low");
+    let v = req(Model::haiku_5_5()
+        .with_thinking_off(Haiku5_5ThinkingOffEffort::High)
+        .with_adaptive_thinking(ThinkingDisplayWithUpdates::Summarized));
+    assert_eq!(v["thinking"], serde_json::json!({"type": "adaptive", "display": "summarized"}));
+    assert_eq!(v["output_config"]["effort"], "medium", "leaving thinking off restores the documented default");
+    let v = req(Model::haiku_5_5()
+        .with_adaptive_thinking(ThinkingDisplayWithUpdates::Summarized)
+        .with_effort(Haiku5_5Effort::Max));
+    assert_eq!(v["thinking"]["display"], "summarized", "effort keeps the display");
+    assert_eq!(v["output_config"]["effort"], "max");
+}
+
+#[test]
+fn haiku_5_5_updates_display_requires_its_beta() {
+    let ctx = Context::new(Opening::None);
+    let updates = Model::haiku_5_5().with_adaptive_thinking(ThinkingDisplayWithUpdates::Updates);
+    let request = Request::new(&ctx, updates, 16).unwrap();
+    assert_eq!(request.required_beta_features().collect::<Vec<_>>(), vec![BetaFeature::ThinkingDisplayUpdates]);
+    assert_eq!(serde_json::to_value(request).unwrap()["thinking"]["display"], "updates");
+    assert_eq!(Request::new(&ctx, Model::haiku_5_5(), 16).unwrap().required_beta_features().count(), 0);
+}
+
+#[test]
+fn haiku_5_5_thinking_off_refuses_an_effort_change() {
+    let mut ctx = Context::new(Opening::None);
+    ctx.push_user_text("one");
+    ctx.push_assistant_text("ok");
+    ctx.push_effort(PerMessageEffort::Low);
+    ctx.push_user_text("two");
+    let thinking_off = || Model::haiku_5_5().with_thinking_off(Haiku5_5ThinkingOffEffort::Medium);
+    assert_eq!(
+        Request::new(&ctx, thinking_off(), 16).err(),
+        Some(RequestError::PerMessageEffortChangedWithThinkingOff {
+            model: ModelId::Haiku5_5,
+            at: 2,
+            effort: PerMessageEffort::Low,
+            in_effect: PerMessageEffort::Medium,
+        })
+    );
+    assert!(Request::new(&ctx, Model::haiku_5_5(), 16).is_ok(), "adaptive thinking lets effort change");
+}
+
+#[test]
+fn haiku_5_5_accepts_forced_tool_choice_and_binds_only_adaptive_thinking() {
+    let ctx = Context::new(Opening::None);
+    let request = Request::new(&ctx, Model::haiku_5_5(), 16).unwrap();
+    assert!(request.with_tool_choice(ToolChoice::any()).is_ok());
+    let off = Model::haiku_5_5().with_thinking_off(Haiku5_5ThinkingOffEffort::High);
+    assert_eq!(
+        Request::new(&ctx, off, 16).unwrap().with_prefix_mismatch_behavior(PrefixMismatchBehavior::Error).err(),
+        Some(RequestError::ThinkingBindingWithoutThinking { model: ModelId::Haiku5_5 })
+    );
+}
+
+#[test]
+fn haiku_5_5_constants() {
+    let id = ModelId::Haiku5_5;
+    assert_eq!(id.min_cacheable_prefix_tokens(), 512);
+    assert_eq!(id.context_window_tokens(), 1_000_000);
+    assert_eq!(id.max_output_tokens(), 128_000);
+    assert_eq!(id.knowledge_cutoff(), YearMonth::new(2026, Month::June));
+    assert_eq!(id.training_cutoff(), YearMonth::new(2026, Month::June));
+    assert!(id.accepts_mid_conversation_system_message());
+    assert!(id.accepts_per_message_effort());
+    assert!(id.accepts_forced_tool_choice());
+}
+
+/// Haiku 5.5 alone is priced by prompt length, and the length counts cache
+/// reads and writes, so the threshold falls on the whole input.
+#[test]
+fn haiku_5_5_is_priced_by_prompt_length() {
+    let id = ModelId::Haiku5_5;
+    let short = Pricing { input_cents_per_mtok: 10, cache_read_input_cents_per_mtok: 1, output_cents_per_mtok: 50 };
+    let long = Pricing { input_cents_per_mtok: 50, cache_read_input_cents_per_mtok: 5, output_cents_per_mtok: 250 };
+    assert_eq!(id.price_per_mtok(), short);
+    assert_eq!(id.long_prompt_price_per_mtok(), long);
+    assert_eq!(id.long_prompt_threshold_tokens(), Some(100_000));
+    assert_eq!(id.price_per_mtok_for_prompt(0), short);
+    assert_eq!(id.price_per_mtok_for_prompt(100_000), short, "up to 100,000 tokens is the short tier");
+    assert_eq!(id.price_per_mtok_for_prompt(100_001), long);
+    for id in [ModelId::Sonnet5_5, ModelId::Haiku4_5, ModelId::Fable5_1] {
+        assert_eq!(id.long_prompt_threshold_tokens(), None);
+        assert_eq!(id.price_per_mtok_for_prompt(900_000), id.price_per_mtok(), "{id:?} has one tier");
+    }
 }
 
 #[test]

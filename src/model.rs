@@ -93,13 +93,15 @@ pub enum ModelId {
     Opus5,
     /// `claude-opus-4-8`, the prior Opus tier.
     Opus4_8,
+    /// `claude-haiku-5-5`, the current small tier.
+    Haiku5_5,
     /// `claude-sonnet-5-5`, the current Sonnet tier.
     Sonnet5_5,
     /// `claude-sonnet-5`, the prior Sonnet tier.
     Sonnet5,
     /// `claude-sonnet-4-6`, the prior Sonnet tier.
     Sonnet4_6,
-    /// `claude-haiku-4-5`, the small tier.
+    /// `claude-haiku-4-5`, the prior small tier.
     Haiku4_5,
 }
 
@@ -107,7 +109,9 @@ pub enum ModelId {
 ///
 /// Cache reads are explicit because Fable 5.1's $0.25 rate is 2.5% of its base
 /// input price, while the other modeled models use the usual 10% rate. Batch,
-/// cache-write, promotional, and per-platform rates are not represented.
+/// cache-write, promotional, and per-platform rates are not represented. A model
+/// priced by prompt length has one `Pricing` per length tier; see
+/// [`ModelId::price_per_mtok_for_prompt`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pricing {
     /// Price of a million uncached input tokens, in US cents.
@@ -219,6 +223,7 @@ impl ModelId {
             ModelId::Opus5_5 => "claude-opus-5-5",
             ModelId::Opus5 => "claude-opus-5",
             ModelId::Opus4_8 => "claude-opus-4-8",
+            ModelId::Haiku5_5 => "claude-haiku-5-5",
             ModelId::Sonnet5_5 => "claude-sonnet-5-5",
             ModelId::Sonnet5 => "claude-sonnet-5",
             ModelId::Sonnet4_6 => "claude-sonnet-4-6",
@@ -237,7 +242,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 512,
             ModelId::Opus5_5 | ModelId::Opus5 => 512,
             ModelId::Opus4_8 => 1_024,
-            ModelId::Sonnet5_5 => 512,
+            ModelId::Sonnet5_5 | ModelId::Haiku5_5 => 512,
             ModelId::Sonnet5 => 1_024,
             ModelId::Sonnet4_6 => 1_024,
             ModelId::Haiku4_5 => 4_096,
@@ -250,7 +255,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 1_000_000,
             ModelId::Opus5_5 | ModelId::Opus5 => 1_000_000,
             ModelId::Opus4_8 => 1_000_000,
-            ModelId::Sonnet5_5 | ModelId::Sonnet5 => 1_000_000,
+            ModelId::Sonnet5_5 | ModelId::Sonnet5 | ModelId::Haiku5_5 => 1_000_000,
             ModelId::Sonnet4_6 => 1_000_000,
             ModelId::Haiku4_5 => 200_000,
         }
@@ -260,7 +265,7 @@ impl ModelId {
     ///
     /// A closed list, not a tier rule: the feature is documented as available on
     /// Fable 5.1, Fable 5, Mythos 5.1, Mythos 5, Opus 5.5, Opus 5, Opus 4.8,
-    /// Sonnet 5.5, and *not* on Sonnet 5, where the documentation says to use the top-level
+    /// Sonnet 5.5, Haiku 5.5, and *not* on Sonnet 5, where the documentation says to use the top-level
     /// `system` field instead. Every model the list omits is therefore `false`
     /// here, so adding a model states its answer rather than inheriting a guess.
     ///
@@ -280,7 +285,8 @@ impl ModelId {
             | ModelId::Opus5_5
             | ModelId::Opus5
             | ModelId::Opus4_8
-            | ModelId::Sonnet5_5 => true,
+            | ModelId::Sonnet5_5
+            | ModelId::Haiku5_5 => true,
             ModelId::Sonnet5 | ModelId::Sonnet4_6 | ModelId::Haiku4_5 => false,
         }
     }
@@ -288,9 +294,9 @@ impl ModelId {
     /// Whether this model accepts an effort-only system message.
     ///
     /// The beta is a closed model list: Fable 5.1, Mythos 5.1, Opus 5.5, Opus 5,
-    /// and Sonnet 5.5. Mythos is not modeled by this crate.
+    /// Sonnet 5.5, and Haiku 5.5. Mythos is not modeled by this crate.
     pub fn accepts_per_message_effort(self) -> bool {
-        matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Opus5 | ModelId::Sonnet5_5)
+        matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Opus5 | ModelId::Sonnet5_5 | ModelId::Haiku5_5)
     }
 
     /// Whether this model accepts `tool_choice` values that force a call.
@@ -312,7 +318,7 @@ impl ModelId {
             ModelId::Fable5_1 | ModelId::Fable5 => 128_000,
             ModelId::Opus5_5 | ModelId::Opus5 => 128_000,
             ModelId::Opus4_8 => 128_000,
-            ModelId::Sonnet5_5 | ModelId::Sonnet5 => 128_000,
+            ModelId::Sonnet5_5 | ModelId::Sonnet5 | ModelId::Haiku5_5 => 128_000,
             ModelId::Sonnet4_6 => 128_000,
             ModelId::Haiku4_5 => 64_000,
         }
@@ -327,7 +333,7 @@ impl ModelId {
             ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
-            ModelId::Sonnet5_5 => (2026, Month::June),
+            ModelId::Sonnet5_5 | ModelId::Haiku5_5 => (2026, Month::June),
             ModelId::Sonnet5 => (2026, Month::January),
             ModelId::Sonnet4_6 => (2025, Month::August),
             ModelId::Haiku4_5 => (2025, Month::February),
@@ -343,7 +349,7 @@ impl ModelId {
             ModelId::Opus5_5 => (2026, Month::June),
             ModelId::Opus5 => (2026, Month::May),
             ModelId::Opus4_8 => (2026, Month::January),
-            ModelId::Sonnet5_5 => (2026, Month::June),
+            ModelId::Sonnet5_5 | ModelId::Haiku5_5 => (2026, Month::June),
             ModelId::Sonnet5 => (2026, Month::January),
             ModelId::Sonnet4_6 => (2026, Month::January),
             ModelId::Haiku4_5 => (2025, Month::July),
@@ -351,7 +357,9 @@ impl ModelId {
         YearMonth::new(year, month)
     }
 
-    /// Standard list price per MTok (see [`Pricing`] for caveats).
+    /// Standard list price per MTok of a prompt within
+    /// [`Self::long_prompt_threshold_tokens`], or of any prompt where the model
+    /// has no such threshold (see [`Pricing`] for caveats).
     pub fn price_per_mtok(self) -> Pricing {
         let (input, cache_read_input, output) = match self {
             ModelId::Fable5_1 => (1_000, 25, 5_000),
@@ -360,12 +368,51 @@ impl ModelId {
             ModelId::Opus5 | ModelId::Opus4_8 => (500, 50, 2_500),
             ModelId::Sonnet5_5 | ModelId::Sonnet5 => (200, 20, 1_000),
             ModelId::Sonnet4_6 => (300, 30, 1_500),
+            ModelId::Haiku5_5 => (10, 1, 50),
             ModelId::Haiku4_5 => (100, 10, 500),
         };
         Pricing {
             input_cents_per_mtok: input,
             cache_read_input_cents_per_mtok: cache_read_input,
             output_cents_per_mtok: output,
+        }
+    }
+
+    /// The prompt length above which a request pays the higher
+    /// [`Self::long_prompt_price_per_mtok`], or `None` where the price does not
+    /// depend on prompt length.
+    ///
+    /// Haiku 5.5 is the one model priced by prompt length: the full context
+    /// window, but a request whose prompt exceeds this pays more for every token
+    /// it is billed, output included.
+    pub fn long_prompt_threshold_tokens(self) -> Option<u32> {
+        match self {
+            ModelId::Haiku5_5 => Some(100_000),
+            _ => None,
+        }
+    }
+
+    /// The price of a request whose prompt exceeds
+    /// [`Self::long_prompt_threshold_tokens`]; [`Self::price_per_mtok`] for a model
+    /// without such a threshold.
+    pub fn long_prompt_price_per_mtok(self) -> Pricing {
+        match self {
+            ModelId::Haiku5_5 => {
+                Pricing { input_cents_per_mtok: 50, cache_read_input_cents_per_mtok: 5, output_cents_per_mtok: 250 }
+            }
+            _ => self.price_per_mtok(),
+        }
+    }
+
+    /// The price a request is billed at, given its prompt length.
+    ///
+    /// Each request is priced on its own, and its prompt length counts every
+    /// input token, cache reads and writes included, so the argument is
+    /// [`crate::usage::Usage::total_input_tokens`], not the uncached tail.
+    pub fn price_per_mtok_for_prompt(self, prompt_tokens: u64) -> Pricing {
+        match self.long_prompt_threshold_tokens() {
+            Some(threshold) if prompt_tokens > u64::from(threshold) => self.long_prompt_price_per_mtok(),
+            _ => self.price_per_mtok(),
         }
     }
 }
@@ -382,6 +429,8 @@ pub enum Model {
     Opus5(Opus5),
     /// Opus 4.8 and its parameters.
     Opus4_8(Opus4_8),
+    /// Haiku 5.5 and its parameters.
+    Haiku5_5(Haiku5_5),
     /// Sonnet 5.5 and its parameters.
     Sonnet5_5(Sonnet5_5),
     /// Sonnet 5 and its parameters.
@@ -401,6 +450,7 @@ impl Model {
             Model::Fable5(_) => ModelId::Fable5,
             Model::Opus5(_) => ModelId::Opus5,
             Model::Opus4_8(_) => ModelId::Opus4_8,
+            Model::Haiku5_5(_) => ModelId::Haiku5_5,
             Model::Sonnet5_5(_) => ModelId::Sonnet5_5,
             Model::Sonnet5(_) => ModelId::Sonnet5,
             Model::Sonnet4_6(_) => ModelId::Sonnet4_6,
@@ -440,6 +490,10 @@ impl Model {
     /// Opus 4.8 with its default parameters.
     pub fn opus_4_8() -> Opus4_8 {
         Opus4_8::default()
+    }
+    /// Haiku 5.5 with its default parameters.
+    pub fn haiku_5_5() -> Haiku5_5 {
+        Haiku5_5::default()
     }
     /// Sonnet 5.5 with its default parameters.
     pub fn sonnet_5_5() -> Sonnet5_5 {
@@ -482,6 +536,11 @@ impl From<Opus5> for Model {
 impl From<Opus4_8> for Model {
     fn from(p: Opus4_8) -> Self {
         Model::Opus4_8(p)
+    }
+}
+impl From<Haiku5_5> for Model {
+    fn from(p: Haiku5_5) -> Self {
+        Model::Haiku5_5(p)
     }
 }
 impl From<Sonnet5_5> for Model {
@@ -659,6 +718,11 @@ api_enum! {
         Max => "max",
     }
 }
+
+// ── Haiku 5.5 ────────────────────────────────────────────────────────────────
+
+mod haiku_5_5;
+pub use haiku_5_5::{Haiku5_5, Haiku5_5Effort, Haiku5_5Thinking, Haiku5_5ThinkingOffEffort};
 
 // ── Sonnet 5.5 ───────────────────────────────────────────────────────────────
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.18.0
+
+- Claude Haiku 5.5 is now a first-class model: `Model::haiku_5_5`, `Haiku5_5`,
+  `Haiku5_5Thinking`, `Haiku5_5Effort`, `Haiku5_5ThinkingOffEffort`, and
+  `ModelId::Haiku5_5`. The emitted model ID is `claude-haiku-5-5`.
+- Its thinking is adaptive by default, with all five effort levels (`medium`
+  by default) and omitted, summarized or updates display. Thinking off is
+  `{type: "disabled"}`, which this model accepts, at `low`, `medium` or `high`
+  only: `xhigh` and `max` are refused with thinking disabled, so they are absent
+  from `Haiku5_5ThinkingOffEffort`. `between_tools`, legacy budgeted thinking,
+  `temperature`, `top_p`, `top_k` and prefill are all refused and do not exist
+  on the type.
+- Forced tool choice is accepted, unlike on Opus 5.5, Sonnet 5.5 and Fable 5.1.
+  Mid-conversation system messages and per-message effort are supported, and
+  with thinking disabled an effort message must restate the effort in effect.
+- Documented facts sit beside the other models: 1M-token context, 128K maximum
+  output, 512-token cache minimum, June 2026 knowledge and training cutoffs.
+- Haiku 5.5 is the first model priced by prompt length. Up to 100,000 prompt
+  tokens a million input, cache-read and output tokens cost $0.10, $0.01 and
+  $0.50; above, $0.50, $0.05 and $2.50. `ModelId::price_per_mtok_for_prompt`
+  takes the prompt length, which counts cache reads and writes
+  (`Usage::total_input_tokens`), and answers the tier a request is billed at;
+  `long_prompt_threshold_tokens` and `long_prompt_price_per_mtok` expose the
+  two halves. `price_per_mtok` stays the base tier, and is the only tier of every
+  other model.
+- `PromptCache` renders Haiku 5.5's effort after every cacheable position and
+  its thinking mode before the tools, measured first-party on 2026-10-11: an
+  effort change misses nothing, while switching adaptive to disabled misses all
+  three breakpoints. Display does not render.
+
+  `anthropic` is now 0.18.0.
+
 ## 0.17.1
 
 - A rolling cache breakpoint no longer lands on a thinking or redacted

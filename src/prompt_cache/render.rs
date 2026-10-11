@@ -37,16 +37,17 @@ enum ConfigurationLevel {
 
 /// Where a model renders its thinking mode, and where its top-level effort.
 ///
-/// Measured on 2026-09-25, the two share a level on every model but Sonnet 5.5,
-/// measured on 2026-09-29: its effort renders after every cacheable position,
-/// while switching between adaptive and `between_tools` misses all three.
+/// Measured on 2026-09-25, the two share a level on every model but Sonnet 5.5
+/// and Haiku 5.5, measured on 2026-09-29 and 2026-10-11: their effort renders
+/// after every cacheable position, while switching between adaptive and
+/// `between_tools` (Sonnet 5.5) or `disabled` (Haiku 5.5) misses all three.
 /// Opus 5.5 and Fable 5.1 have one thinking mode, so its level is unobservable
 /// and taken to be their effort's.
 fn configuration_levels(model: ModelId) -> (ConfigurationLevel, ConfigurationLevel) {
     use ConfigurationLevel::{AfterPrefix, BeforeMessages, BeforeTools};
     match model {
         ModelId::Opus5_5 | ModelId::Fable5_1 => (AfterPrefix, AfterPrefix),
-        ModelId::Sonnet5_5 => (BeforeTools, AfterPrefix),
+        ModelId::Sonnet5_5 | ModelId::Haiku5_5 => (BeforeTools, AfterPrefix),
         ModelId::Haiku4_5 => (BeforeMessages, BeforeMessages),
         ModelId::Fable5 | ModelId::Opus5 | ModelId::Opus4_8 | ModelId::Sonnet5 | ModelId::Sonnet4_6 => {
             (BeforeTools, BeforeTools)
