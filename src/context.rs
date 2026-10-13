@@ -786,6 +786,15 @@ impl Context {
         None
     }
 
+    /// Whether the conversation ends with an assistant turn, which asks the model
+    /// to continue it.
+    ///
+    /// A system message cannot follow an assistant turn, so the last entry is the
+    /// assistant's exactly when the conversation ends open.
+    pub(crate) fn ends_with_assistant_turn(&self) -> bool {
+        matches!(self.messages.last(), Some(Message::Assistant(_)))
+    }
+
     /// Where the first content-bearing system message sits, if any.
     ///
     /// Effort-only messages are excluded: unlike persistent and turn-scoped

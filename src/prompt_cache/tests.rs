@@ -145,6 +145,7 @@ fn marked_twice(extended: bool) -> Context {
     context.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     if extended {
         context.push_assistant_text("d");
+        context.push_user_text("e");
     }
     context
 }
@@ -217,6 +218,7 @@ fn a_run_of_tool_calls_counts_as_one_position() {
         );
         grown.push_assistant((0..if extra { 20 } else { 19 }).map(|i| ContentBlock::text(format!("t{i}"))).collect());
         grown.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+        grown.push_user_text("next");
         grown
     };
     for (extra, reached) in [(false, true), (true, false)] {
@@ -237,6 +239,7 @@ fn an_earlier_breakpoint_opens_its_own_window() {
     grown.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
     grown.push_assistant((0..40).map(|i| ContentBlock::text(format!("t{i}"))).collect());
     grown.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
+    grown.push_user_text("next");
     let mut cache = PromptCache::new();
     cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600], 604)).unwrap();
     let served = cache.serve(&CacheKeys::of(&request(&grown)), secs(1), &tokens(&[600, 1200], 1202)).unwrap();
@@ -389,10 +392,8 @@ fn turn_scoped_text_leaves_the_prompt_after_the_next_user_message() {
     context.push_user_text("first");
     context.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
     context.push_turn_scoped_text("only now").unwrap();
-    context.push_assistant_text("reply");
-    context.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
     let mut cache = PromptCache::new();
-    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600, 700], 702)).unwrap();
+    cache.serve(&CacheKeys::of(&request(&context)), T0, &tokens(&[600], 650)).unwrap();
     let mut later = Context::new(Opening::instruction("system"));
     later.push_user_text("first");
     later.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();

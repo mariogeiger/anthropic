@@ -662,6 +662,29 @@ fn a_year_month_is_ordered_chronologically_and_names_its_month() {
 }
 
 #[test]
+fn only_models_that_continue_an_assistant_turn_accept_one_last() {
+    let mut open = Context::new(Opening::None);
+    open.push_user_text("Name a colour.");
+    open.push_assistant_text("The colour is");
+    let mut closed = Context::new(Opening::None);
+    closed.push_user_text("Name a colour.");
+    closed.push_assistant_text("Blue.");
+    closed.push_user_text("Another.");
+    assert!(Request::new(&open, Model::haiku_4_5(), 1).is_ok());
+    assert!(Request::new(&closed, Model::haiku_4_5(), 1).is_ok());
+    assert_eq!(
+        Request::new(&open, Model::haiku_5_5(), 1).err(),
+        Some(RequestError::PrefillUnsupported { model: ModelId::Haiku5_5 }),
+    );
+    assert_eq!(
+        Request::new(&open, Model::opus_4_8(), 1).err(),
+        Some(RequestError::PrefillUnsupported { model: ModelId::Opus4_8 }),
+    );
+    assert!(Request::new(&closed, Model::haiku_5_5(), 1).is_ok());
+    assert!(Request::new(&closed, Model::opus_4_8(), 1).is_ok());
+}
+
+#[test]
 fn max_tokens_must_be_in_range() {
     let ctx = Context::new(Opening::None);
     // Zero is rejected up front (the API requires >= 1).

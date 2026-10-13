@@ -254,6 +254,20 @@ pub enum RequestError {
         /// Index in `messages` of the first system message, the entry to remove.
         at: usize,
     },
+    /// The conversation ends with an assistant turn, which asks the model to
+    /// continue it, and this model does not. The API answers `This model does not
+    /// support assistant message prefill. The conversation must end with a user
+    /// message.` See [`ModelId::accepts_prefill`] for the models that continue.
+    ///
+    /// Checked here rather than at
+    /// [`crate::context::Context::push_assistant`] for the reason
+    /// [`Self::MidConversationSystemMessageUnsupported`] is: the context does not
+    /// know which model will receive it, and the same conversation may be sent to
+    /// several.
+    PrefillUnsupported {
+        /// The model that needs the conversation to end with a user turn.
+        model: ModelId,
+    },
 }
 
 impl std::fmt::Display for RequestError {
@@ -288,6 +302,11 @@ impl std::fmt::Display for RequestError {
                  which {} cannot change while thinking is off",
                 effort.as_str(),
                 in_effect.as_str(),
+                model.api_id()
+            ),
+            RequestError::PrefillUnsupported { model } => write!(
+                f,
+                "{} does not continue an assistant turn; the conversation must end with a user message",
                 model.api_id()
             ),
             RequestError::MidConversationSystemMessageUnsupported { model, at } => write!(
@@ -348,6 +367,9 @@ impl<'a> Request<'a> {
             && let Some(at) = context.first_content_system_message()
         {
             return Err(RequestError::MidConversationSystemMessageUnsupported { model: model.id(), at });
+        }
+        if !model.id().accepts_prefill() && context.ends_with_assistant_turn() {
+            return Err(RequestError::PrefillUnsupported { model: model.id() });
         }
         if !model.id().accepts_per_message_effort()
             && let Some(at) = context.first_effort_message()

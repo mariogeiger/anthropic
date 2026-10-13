@@ -489,6 +489,7 @@ fn a_rolling_breakpoint_skips_the_thinking_an_answer_ends_on() {
         ContentBlock::RedactedThinking(RedactedThinkingBlock::replay("opaque")),
     ]);
     ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+    ctx.push_user_text("next");
     let v = req(&ctx);
     assert_eq!(v["messages"][1]["content"][0]["cache_control"]["ttl"], "5m");
     for thinking in 1..3 {
@@ -502,5 +503,6 @@ fn an_answer_of_thinking_alone_takes_no_rolling_breakpoint() {
     ctx.push_user_text("one");
     ctx.push_assistant(vec![ContentBlock::Thinking(ThinkingBlock::replay("unfinished", "sig"))]);
     assert_eq!(ctx.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap_err(), RollCacheError::NoBlocksToCache);
+    ctx.push_user_text("next");
     assert!(req(&ctx)["messages"][1]["content"][0].get("cache_control").is_none());
 }

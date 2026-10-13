@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.0
+
+### Breaking: a conversation ending with an assistant turn is refused
+
+- `Request::new` returns `RequestError::PrefillUnsupported` for a `Context`
+  whose last entry is an assistant turn, on every model but Haiku 4.5. The API
+  answers such a conversation with a 400, `This model does not support assistant
+  message prefill. The conversation must end with a user message.`, measured
+  first-party on 2026-10-13 for each model. `ModelId::accepts_prefill` names the
+  models that continue it. A caller that replayed a model's reply and asked again
+  must end its conversation with a user turn.
+
 ## 0.18.0
 
 - Claude Haiku 5.5 is now a first-class model: `Model::haiku_5_5`, `Haiku5_5`,

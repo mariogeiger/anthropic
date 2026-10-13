@@ -482,6 +482,7 @@ mod tests {
             )),
             ContentBlock::text("April 30, 1916."),
         ]);
+        ctx.push_user_text("Thanks.");
         let v = request_of(&ctx);
         assert_eq!(
             v["messages"][1]["content"][0],

@@ -309,6 +309,19 @@ impl ModelId {
         !matches!(self, ModelId::Fable5_1 | ModelId::Opus5_5 | ModelId::Sonnet5_5)
     }
 
+    /// Whether this model continues an assistant turn left open at the end of
+    /// the conversation.
+    ///
+    /// Every model carried here but Haiku 4.5 answers a conversation that ends
+    /// with an assistant turn with `This model does not support assistant message
+    /// prefill. The conversation must end with a user message.` Measured
+    /// first-party on 2026-10-13 for each model. [`crate::request::Request::new`]
+    /// refuses such a conversation on a model that answers `false`; see
+    /// [`crate::request::RequestError::PrefillUnsupported`].
+    pub fn accepts_prefill(self) -> bool {
+        matches!(self, ModelId::Haiku4_5)
+    }
+
     /// Maximum output tokens in a single synchronous Messages API response.
     /// `Request::new` rejects `max_tokens` outside `1..=max_output_tokens()`.
     /// (The Message Batches API permits more on some models via a beta header,
