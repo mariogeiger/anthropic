@@ -518,3 +518,42 @@ fn peeking_names_the_entry_serving_would_read_and_changes_nothing() {
     assert_eq!(cache.peek(&keys, secs(10 * 60)), None);
     assert_eq!(cache.serve(&keys, secs(60), &sizes).unwrap().read, Some(peeked));
 }
+
+#[test]
+fn breakpoints_name_the_keys_of_the_entries_a_request_places() {
+    let keys = CacheKeys::of(&request(&conversation()));
+    let breakpoints = keys.breakpoints();
+    assert_eq!(breakpoints.iter().map(|(_, ttl)| *ttl).collect::<Vec<_>>(), keys.ttls());
+    let marked: Vec<Digest> = keys.cuts.iter().filter(|cut| cut.mark.is_some()).map(|cut| cut.digest).collect();
+    assert_eq!(breakpoints.iter().map(|(digest, _)| *digest).collect::<Vec<_>>(), marked);
+}
+
+#[test]
+fn the_lookback_lists_keys_in_the_order_the_server_looks_them_up() {
+    let mut grown = Context::new(Opening::instruction("system"));
+    grown.push_user_text("anchor");
+    grown.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+    grown.push_assistant((0..40).map(|i| ContentBlock::text(format!("t{i}"))).collect());
+    grown.roll_cache(CacheSlot::S1, CacheTtl::FiveMinutes).unwrap();
+    grown.push_user_text("next");
+    let keys = CacheKeys::of(&request(&grown));
+    let lookback = keys.lookback();
+    let (last, _) = *keys.breakpoints().last().unwrap();
+    let (first, _) = keys.breakpoints()[0];
+    assert_eq!(lookback[0], last, "the last breakpoint is looked up first");
+    assert_eq!(
+        lookback.iter().position(|digest| *digest == first),
+        Some(LOOKBACK_POSITIONS),
+        "an earlier breakpoint's window comes after the last one's"
+    );
+    let distinct: std::collections::BTreeSet<_> = lookback.iter().collect();
+    assert_eq!(distinct.len(), lookback.len(), "each key once");
+
+    let mut cache = PromptCache::new();
+    let mut anchor = Context::new(Opening::instruction("system"));
+    anchor.push_user_text("anchor");
+    anchor.roll_cache(CacheSlot::S0, CacheTtl::FiveMinutes).unwrap();
+    cache.serve(&CacheKeys::of(&request(&anchor)), T0, &tokens(&[600], 604)).unwrap();
+    let read = cache.serve(&keys, secs(1), &tokens(&[600, 1200], 1202)).unwrap().read.unwrap();
+    assert_eq!(read.tokens, 600, "the first live key in the lookback is the one read");
+}

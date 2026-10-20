@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::CacheTtl;
 use crate::usage::{CacheCreation, Usage};
-pub use keys::{CacheKeys, TtlsError};
-use keys::{Cut, Digest};
+pub use keys::{CacheKeys, Digest, TtlsError};
+use keys::{Cut, lookback_order};
 
 /// How many positions a breakpoint's lookback checks, itself included.
 ///
@@ -263,6 +263,14 @@ struct Entry {
 /// usage the server reported and accounts for the loss it reveals, so the
 /// prediction stays exact for everything else.
 ///
+/// A gateway departs from these rules further, in the other direction: it
+/// reads more than predicted. Replaying 20,000 requests recorded through one
+/// on 2026-10-20 with [`PromptCache::explain`], about 4% were unexplained:
+/// it read an entry about the size of the tools and system prompt where no
+/// breakpoint had placed one, more than 20 minutes after any request wrote it
+/// with five minutes, and it read 5-minute entries up to 320 s after their
+/// last use.
+///
 /// [`ModelId::min_cacheable_prefix_tokens`]: crate::model::ModelId::min_cacheable_prefix_tokens
 #[derive(Debug, Default)]
 pub struct PromptCache {
@@ -345,8 +353,7 @@ impl PromptCache {
     /// the entry it would read.
     pub fn peek(&self, keys: &CacheKeys, started_at: Duration) -> Option<Touched> {
         let cuts = keys.cuts.as_slice();
-        let marks: Vec<usize> = (0..cuts.len()).filter(|&i| cuts[i].mark.is_some()).collect();
-        let hit = *self.reachable(cuts, &marks, started_at).first()?;
+        let hit = *self.reachable(cuts, started_at).first()?;
         let entry = self.entries[&cuts[hit].digest];
         Some(Touched { position: cuts[hit].position, tokens: entry.tokens, ttl: self.storage[&entry.storage].ttl })
     }
@@ -375,7 +382,7 @@ impl PromptCache {
         }
 
         let arrival = Arrival { cuts, marks, tokens, minimum: keys.minimum, now: started_at };
-        let reachable = self.reachable(cuts, &arrival.marks, started_at);
+        let reachable = self.reachable(cuts, started_at);
         let entry_at = |cut: usize| self.entries[&cuts[cut].digest];
         let kept = match observed {
             None => 0,
@@ -507,19 +514,11 @@ impl PromptCache {
 
     /// Every live entry the lookback reaches, as cut indices in the order it
     /// reaches them: from each breakpoint, last first, nearest first.
-    fn reachable(&self, cuts: &[Cut], marks: &[usize], now: Duration) -> Vec<usize> {
-        let mut reachable = Vec::new();
-        for &mark in marks.iter().rev() {
-            let first_unit = cuts[mark].unit;
-            let window = (0..=mark).rev().take_while(|&cut| first_unit - cuts[cut].unit < LOOKBACK_POSITIONS);
-            for cut in window {
-                let live = self.entries.get(&cuts[cut].digest).is_some_and(|entry| self.alive(entry.storage, now));
-                if live && !reachable.contains(&cut) {
-                    reachable.push(cut);
-                }
-            }
-        }
-        reachable
+    fn reachable(&self, cuts: &[Cut], now: Duration) -> Vec<usize> {
+        lookback_order(cuts)
+            .into_iter()
+            .filter(|&cut| self.entries.get(&cuts[cut].digest).is_some_and(|entry| self.alive(entry.storage, now)))
+            .collect()
     }
 
     /// Let go of all storage whose line has expired by `now`, and the keys into it.

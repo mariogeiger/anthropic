@@ -10,9 +10,11 @@ use crate::request::Request;
 ///
 /// A digest rather than the bytes because an entry's key is the whole prefix
 /// before it, which grows with the conversation; a collision would need two
-/// different prompts to agree on 256 bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) struct Digest(pub(super) [u8; 32]);
+/// different prompts to agree on 256 bits. Public so that a caller can follow
+/// one entry across requests, by the key the server finds it by, without the
+/// requests; only rendering makes one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Digest(pub(super) [u8; 32]);
 
 impl Serialize for Digest {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -136,6 +138,24 @@ impl CacheKeys {
         self.cuts.iter().filter_map(|cut| cut.mark).collect()
     }
 
+    /// The key of each breakpoint's prefix, with its TTL, in prompt order:
+    /// the entries this request places if its prefixes are large enough.
+    pub fn breakpoints(&self) -> Vec<(Digest, CacheTtl)> {
+        self.cuts.iter().filter_map(|cut| cut.mark.map(|ttl| (cut.digest, ttl))).collect()
+    }
+
+    /// Every key a read of this request looks up, each once, in the order the
+    /// server looks: from each breakpoint, last first, back over
+    /// [`LOOKBACK_POSITIONS`], nearest first. The first one live is the entry
+    /// read.
+    ///
+    /// Exists so that a caller who knows which entries live, from what the
+    /// server reported rather than from [`PromptCache`](super::PromptCache),
+    /// finds the entry a request reads by the same rule.
+    pub fn lookback(&self) -> Vec<Digest> {
+        lookback_order(&self.cuts).into_iter().map(|cut| self.cuts[cut].digest).collect()
+    }
+
     /// The same prompt with `ttls` on its breakpoints, one per breakpoint in
     /// prompt order.
     ///
@@ -156,4 +176,21 @@ impl CacheKeys {
         }
         Ok(keys)
     }
+}
+
+/// The cut indices a read of `cuts` looks up, each once, in the order the
+/// server looks: from each breakpoint, last first, back over
+/// [`LOOKBACK_POSITIONS`] positions counting the breakpoint, nearest first.
+pub(super) fn lookback_order(cuts: &[Cut]) -> Vec<usize> {
+    let mut order = Vec::new();
+    for mark in (0..cuts.len()).rev().filter(|&i| cuts[i].mark.is_some()) {
+        let first_unit = cuts[mark].unit;
+        let window = (0..=mark).rev().take_while(|&cut| first_unit - cuts[cut].unit < LOOKBACK_POSITIONS);
+        for cut in window {
+            if !order.contains(&cut) {
+                order.push(cut);
+            }
+        }
+    }
+    order
 }

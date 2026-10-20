@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.0
+
+- `prompt_cache::Digest` is public: the key an entry is found by, opaque,
+  ordered and serialized as before, so a caller can follow one entry across
+  requests from what the server reported, without the requests.
+- `CacheKeys::breakpoints` names the key and TTL of each breakpoint, in prompt
+  order; `CacheKeys::lookback` lists every key a read looks up, each once, in
+  the order the server looks, so that the first one live is the entry read.
+  `PromptCache` finds its entry by the same order.
+- `PromptCache` records where a gateway departs from its rules, measured on
+  20,000 requests replayed with `explain` on 2026-10-20: it reads an entry about
+  the size of the tools and system prompt that no breakpoint placed, long after
+  any TTL sent, and reads 5-minute entries up to 320 s after their last use.
+
 ## 0.19.0
 
 ### Breaking: a conversation ending with an assistant turn is refused
